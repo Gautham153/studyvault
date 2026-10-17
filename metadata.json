@@ -1,0 +1,6 @@
+{
+  "name": "StudyVault",
+  "description": "Personal academic management app to organize subjects, units, topics, study materials, and exams.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
