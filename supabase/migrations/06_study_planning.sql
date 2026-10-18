@@ -68,7 +68,16 @@ CREATE POLICY "Users can update own revision history"
 ON public.revision_history FOR UPDATE
 TO authenticated
 USING (auth.uid() = user_id)
-WITH CHECK (auth.uid() = user_id);
+WITH CHECK (
+    auth.uid() = user_id
+    AND EXISTS (
+        SELECT 1 FROM public.topics t
+        JOIN public.units u ON t.unit_id = u.id
+        JOIN public.subjects s ON u.subject_id = s.id
+        WHERE t.id = revision_history.topic_id
+        AND s.user_id = auth.uid()
+    )
+);
 
 DROP POLICY IF EXISTS "Users can delete own revision history" ON public.revision_history;
 CREATE POLICY "Users can delete own revision history"
