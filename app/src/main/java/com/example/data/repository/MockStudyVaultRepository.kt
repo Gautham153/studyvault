@@ -337,8 +337,9 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
                 if (topic != null) return topic
             }
         }
-        // Fallback for default topic if referenced
-        return unit2JavaTopics.find { it.id == topicId } ?: unit2JavaTopics.first()
+        // No fallback: an unknown topic id must resolve to null so callers never read or
+        // display an unrelated topic.
+        return null
     }
 
     override fun updateTopicStatus(topicId: String, status: TopicStatus) {
@@ -457,6 +458,9 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         if (questionText.isBlank()) {
             return Result.failure(IllegalArgumentException("Question text cannot be blank."))
         }
+        if (marks <= 0) {
+            return Result.failure(IllegalArgumentException("Marks must be a positive number."))
+        }
         val sub = getSubjectById(subjectId)
         val unit = if (unitId != null && sub != null) getUnitById(subjectId, unitId) else null
         val newQ = QuestionItem(
@@ -542,5 +546,8 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
 
     companion object {
         val instance: MockStudyVaultRepository by lazy { MockStudyVaultRepository() }
+
+        /** Creates an isolated instance for unit tests so tests never share mutable singleton state. */
+        fun createIsolated(): MockStudyVaultRepository = MockStudyVaultRepository()
     }
 }

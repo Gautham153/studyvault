@@ -48,6 +48,7 @@ import com.example.data.model.Importance
 import com.example.data.model.QuestionItem
 import com.example.data.model.TopicStatus
 import com.example.ui.components.StatusBadge
+import com.example.ui.screens.questions.AddEditQuestionDialog
 import com.example.ui.screens.questions.QuestionsViewModel
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MoreVert
@@ -147,21 +148,23 @@ fun SubjectDetailScreen(
                     )
                 }
             },
-            actions = {
-                IconButton(onClick = { }) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Options",
-                        tint = TextSecondary
-                    )
-                }
-            },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = BackgroundNavy
             )
         )
 
         subject?.let { sub ->
+            val materials by viewModel.materials.collectAsState()
+
+            // One shared questions state for this subject: the Overview counts and the
+            // Questions tab read the same repository-backed data, so counts stay
+            // consistent immediately after add/edit/delete operations.
+            val questionsViewModel: QuestionsViewModel = viewModel(key = "questions_${sub.id}")
+            val questionsState by questionsViewModel.uiState.collectAsState()
+            LaunchedEffect(sub.id) {
+                questionsViewModel.loadForSubject(sub.id)
+            }
+
             // Hero card with subject summary
             SubjectHeroCard(
                 subject = sub,
@@ -203,12 +206,14 @@ fun SubjectDetailScreen(
             when (selectedTabIndex) {
                 0 -> SubjectOverviewTab(
                     subject = sub,
+                    materialsCount = materials.size,
+                    questionsCount = questionsState.questions.size,
                     onNavigateToUnit = { unitId -> onNavigateToUnitDetail(sub.id, unitId) },
                     onSelectMaterialsTab = { selectedTabIndex = 1 },
                     onSelectQuestionsTab = { selectedTabIndex = 2 }
                 )
                 1 -> SubjectMaterialsTab(subject = sub, viewModel = viewModel)
-                2 -> SubjectQuestionsTab(subject = sub)
+                2 -> SubjectQuestionsTab(subject = sub, viewModel = questionsViewModel)
             }
         }
     }
@@ -260,6 +265,8 @@ private fun SubjectHeroCard(
 @Composable
 private fun SubjectOverviewTab(
     subject: Subject,
+    materialsCount: Int,
+    questionsCount: Int,
     onNavigateToUnit: (String) -> Unit,
     onSelectMaterialsTab: () -> Unit,
     onSelectQuestionsTab: () -> Unit
@@ -314,7 +321,7 @@ private fun SubjectOverviewTab(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Materials (${subject.materialsCount})",
+                            text = "Materials ($materialsCount)",
                             style = MaterialTheme.typography.titleSmall,
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold
@@ -353,7 +360,7 @@ private fun SubjectOverviewTab(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Important Questions (${subject.questionsCount})",
+                            text = "Important Questions ($questionsCount)",
                             style = MaterialTheme.typography.titleSmall,
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold
@@ -888,17 +895,12 @@ private fun SubjectMaterialsTab(
 }
 
 @Composable
-private fun SubjectQuestionsTab(subject: Subject) {
-    val viewModel: QuestionsViewModel = viewModel(key = "questions_${subject.id}")
+private fun SubjectQuestionsTab(subject: Subject, viewModel: QuestionsViewModel) {
     val uiState by viewModel.uiState.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var questionToEdit by remember { mutableStateOf<QuestionItem?>(null) }
     var questionToDelete by remember { mutableStateOf<QuestionItem?>(null) }
-
-    LaunchedEffect(subject.id) {
-        viewModel.loadForSubject(subject.id)
-    }
 
     LazyColumn(
         modifier = Modifier
@@ -1192,136 +1194,5 @@ private fun SubjectQuestionsTab(subject: Subject) {
             containerColor = SurfaceDark
         )
     }
-}
-
-@Composable
-private fun AddEditQuestionDialog(
-    subjectId: String,
-    initialQuestion: QuestionItem? = null,
-    onDismiss: () -> Unit,
-    onSave: (String, Int, Importance, String) -> Unit
-) {
-    var questionText by remember { mutableStateOf(initialQuestion?.questionText ?: "") }
-    var marksStr by remember { mutableStateOf(initialQuestion?.marks?.toString() ?: "5") }
-    var importance by remember { mutableStateOf(initialQuestion?.importance ?: Importance.MEDIUM) }
-    var status by remember { mutableStateOf(initialQuestion?.status ?: "Not Prepared") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    val statuses = listOf("Not Prepared", "Learning", "Prepared", "High Priority")
-    val importances = listOf(Importance.LOW, Importance.MEDIUM, Importance.HIGH)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = if (initialQuestion == null) "Add Question" else "Edit Question",
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = questionText,
-                    onValueChange = { questionText = it },
-                    label = { Text("Question Text") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryBlue,
-                        unfocusedBorderColor = SurfaceElevated,
-                        focusedLabelColor = PrimaryBlue,
-                        unfocusedLabelColor = TextSecondary,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = marksStr,
-                    onValueChange = { marksStr = it },
-                    label = { Text("Marks") },
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryBlue,
-                        unfocusedBorderColor = SurfaceElevated,
-                        focusedLabelColor = PrimaryBlue,
-                        unfocusedLabelColor = TextSecondary,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text(text = "Importance", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    importances.forEach { imp ->
-                        val selected = imp == importance
-                        FilterChip(
-                            selected = selected,
-                            onClick = { importance = imp },
-                            label = { Text(imp.name.lowercase().replaceFirstChar { it.uppercase() }) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = SurfaceElevated,
-                                selectedContainerColor = PrimaryBlue,
-                                labelColor = TextSecondary,
-                                selectedLabelColor = Color.White
-                            )
-                        )
-                    }
-                }
-
-                Text(text = "Status", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    statuses.forEach { st ->
-                        val selected = st.equals(status, ignoreCase = true)
-                        FilterChip(
-                            selected = selected,
-                            onClick = { status = st },
-                            label = { Text(st, fontSize = 10.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = SurfaceElevated,
-                                selectedContainerColor = StatusGreen,
-                                labelColor = TextSecondary,
-                                selectedLabelColor = Color.White
-                            )
-                        )
-                    }
-                }
-
-                error?.let {
-                    Text(text = it, color = StatusRed, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val trimmed = questionText.trim()
-                    if (trimmed.isBlank()) {
-                        error = "Question text cannot be blank."
-                        return@Button
-                    }
-                    val marksInt = marksStr.toIntOrNull() ?: 5
-                    onSave(trimmed, marksInt, importance, status)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
-            ) {
-                Text("Save", color = Color.White)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextSecondary)
-            }
-        },
-        containerColor = SurfaceDark
-    )
 }
 

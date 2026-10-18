@@ -33,26 +33,41 @@ class QuestionsViewModel(
     private var loadRequestToken = 0
 
     init {
-        // Observe repository subjects updates to keep questions reactive
+        // Observe repository subjects updates to keep questions reactive.
+        // Every refresh verifies the active request token and resource before publishing,
+        // so a late result from a previous topic/subject can never overwrite current UI.
         viewModelScope.launch {
             repository.subjects.collect { _ ->
+                val requestToken = loadRequestToken
                 val tId = activeTopicId
                 val sId = activeSubjectId
-                if (tId != null) {
-                    val questions = repository.getQuestionsForTopic(tId)
-                    _uiState.update { current ->
-                        current.copy(
-                            questions = questions,
-                            isEmpty = questions.isEmpty()
-                        )
+                try {
+                    if (tId != null) {
+                        val questions = repository.getQuestionsForTopic(tId)
+                        if (requestToken == loadRequestToken && activeTopicId == tId) {
+                            _uiState.update { current ->
+                                current.copy(
+                                    questions = questions,
+                                    isEmpty = questions.isEmpty()
+                                )
+                            }
+                        }
+                    } else if (sId != null) {
+                        val questions = repository.getQuestionsForSubject(sId)
+                        if (requestToken == loadRequestToken && activeSubjectId == sId) {
+                            _uiState.update { current ->
+                                current.copy(
+                                    questions = questions,
+                                    isEmpty = questions.isEmpty()
+                                )
+                            }
+                        }
                     }
-                } else if (sId != null) {
-                    val questions = repository.getQuestionsForSubject(sId)
-                    _uiState.update { current ->
-                        current.copy(
-                            questions = questions,
-                            isEmpty = questions.isEmpty()
-                        )
+                } catch (e: Exception) {
+                    if (requestToken == loadRequestToken) {
+                        _uiState.update {
+                            it.copy(errorMessage = e.message ?: "Failed to refresh questions.")
+                        }
                     }
                 }
             }
@@ -60,6 +75,7 @@ class QuestionsViewModel(
     }
 
     fun loadForTopic(topicId: String) {
+        val resourceChanged = activeTopicId != topicId || activeSubjectId != null
         val requestToken = ++loadRequestToken
         activeTopicId = topicId
         activeSubjectId = null
@@ -67,6 +83,10 @@ class QuestionsViewModel(
         _uiState.update {
             it.copy(
                 isLoading = true,
+                // Clear the previous resource's questions so they are never displayed
+                // for the newly selected topic while the load is in flight.
+                questions = if (resourceChanged) emptyList() else it.questions,
+                isEmpty = if (resourceChanged) true else it.isEmpty,
                 errorMessage = null,
                 successMessage = null
             )
@@ -99,6 +119,7 @@ class QuestionsViewModel(
     }
 
     fun loadForSubject(subjectId: String) {
+        val resourceChanged = activeSubjectId != subjectId || activeTopicId != null
         val requestToken = ++loadRequestToken
         activeSubjectId = subjectId
         activeTopicId = null
@@ -106,6 +127,9 @@ class QuestionsViewModel(
         _uiState.update {
             it.copy(
                 isLoading = true,
+                // Clear the previous resource's questions while the new subject loads.
+                questions = if (resourceChanged) emptyList() else it.questions,
+                isEmpty = if (resourceChanged) true else it.isEmpty,
                 errorMessage = null,
                 successMessage = null
             )
@@ -146,8 +170,13 @@ class QuestionsViewModel(
         importance: Importance = Importance.MEDIUM,
         status: String = "NOT_PREPARED"
     ) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
         if (questionText.isBlank()) {
             _uiState.update { it.copy(errorMessage = "Question text cannot be blank.") }
+            return
+        }
+        if (marks <= 0) {
+            _uiState.update { it.copy(errorMessage = "Marks must be a positive number.") }
             return
         }
 
@@ -188,6 +217,15 @@ class QuestionsViewModel(
     }
 
     fun updateQuestion(question: QuestionItem) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
+        if (question.questionText.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Question text cannot be blank.") }
+            return
+        }
+        if (question.marks <= 0) {
+            _uiState.update { it.copy(errorMessage = "Marks must be a positive number.") }
+            return
+        }
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
@@ -216,6 +254,7 @@ class QuestionsViewModel(
     }
 
     fun deleteQuestion(questionId: String) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {

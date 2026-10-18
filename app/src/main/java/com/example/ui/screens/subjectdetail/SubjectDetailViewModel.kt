@@ -37,20 +37,17 @@ class SubjectDetailViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    // Real study materials for this subject
+    // Real study materials for this subject, sourced exclusively from the material repository.
+    // No cached fallback: after a successful load an empty repository list stays empty, so
+    // deleted files can never be resurrected from stale embedded subject data.
     val materials: StateFlow<List<MaterialItem>> = combine(
         _subject,
         materialRepository.materials,
         _loadedSubjectId
     ) { currentSub, allMats, loadedId ->
         val sId = currentSub?.id
-        if (sId != null) {
-            val fromRepo = allMats.filter { it.subjectId == sId }
-            if (loadedId == sId) {
-                fromRepo
-            } else {
-                if (fromRepo.isNotEmpty()) fromRepo else currentSub.materials
-            }
+        if (sId != null && loadedId == sId) {
+            allMats.filter { it.subjectId == sId }
         } else {
             emptyList()
         }
@@ -68,14 +65,20 @@ class SubjectDetailViewModel(
 
     fun loadSubject(subjectId: String) {
         if (currentSubjectId != subjectId) {
+            // Resource changed: reset load tracking and messages so stale state from the
+            // previous subject is never shown for this one.
             _loadedSubjectId.value = null
+            _statusMessage.value = null
+            _errorMessage.value = null
         }
         currentSubjectId = subjectId
         _subject.value = repository.getSubjectById(subjectId)
         val requestedSubjectId = subjectId
         viewModelScope.launch {
             val result = materialRepository.loadMaterials(subjectId)
-            if (result.isSuccess && currentSubjectId == requestedSubjectId) {
+            // Mark loaded only on a genuine, current success. Stale/discarded requests
+            // (StaleRequestException) and failures must not mark the subject as loaded.
+            if (result.getOrNull() != null && currentSubjectId == requestedSubjectId) {
                 _loadedSubjectId.value = requestedSubjectId
             }
         }

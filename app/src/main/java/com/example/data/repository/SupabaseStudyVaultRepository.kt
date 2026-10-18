@@ -876,8 +876,10 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         val inMemory = _subjects.value.find { it.id == subjectId }?.questions
         if (!inMemory.isNullOrEmpty()) return@withContext inMemory
 
-        val client = SupabaseClientProvider.client ?: return@withContext emptyList()
-        val userId = getUserId() ?: return@withContext emptyList()
+        val client = SupabaseClientProvider.client
+            ?: throw IllegalStateException("Supabase is not configured.")
+        val userId = getUserId()
+            ?: throw IllegalStateException("User is not authenticated.")
         try {
             val dtos: List<QuestionDto> = client.from("questions")
                 .select {
@@ -908,7 +910,9 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching questions for subject $subjectId", e)
-            emptyList()
+            // Surface the failure to the caller: an error must be distinguishable from a
+            // genuine empty result so the UI can show an error state instead of "no data".
+            throw e
         }
     }
 
@@ -916,8 +920,10 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         val topic = getTopicById(topicId)
         if (topic != null && topic.questions.isNotEmpty()) return@withContext topic.questions
 
-        val client = SupabaseClientProvider.client ?: return@withContext emptyList()
-        val userId = getUserId() ?: return@withContext emptyList()
+        val client = SupabaseClientProvider.client
+            ?: throw IllegalStateException("Supabase is not configured.")
+        val userId = getUserId()
+            ?: throw IllegalStateException("User is not authenticated.")
         try {
             val dtos: List<QuestionDto> = client.from("questions")
                 .select {
@@ -946,7 +952,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching questions for topic $topicId", e)
-            emptyList()
+            // Surface the failure instead of masking it as an empty list.
+            throw e
         }
     }
 
@@ -967,6 +974,9 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         val trimmedText = questionText.trim()
         if (trimmedText.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Question text cannot be blank."))
+        }
+        if (marks <= 0) {
+            return@withContext Result.failure(IllegalArgumentException("Marks must be a positive number."))
         }
 
         questionMutex.withLock {
@@ -1160,8 +1170,10 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         val inMemory = _subjects.value.find { it.id == subjectId }?.notes
         if (!inMemory.isNullOrEmpty()) return@withContext inMemory
 
-        val client = SupabaseClientProvider.client ?: return@withContext emptyList()
-        val userId = getUserId() ?: return@withContext emptyList()
+        val client = SupabaseClientProvider.client
+            ?: throw IllegalStateException("Supabase is not configured.")
+        val userId = getUserId()
+            ?: throw IllegalStateException("User is not authenticated.")
         try {
             val dtos: List<NoteDto> = client.from("notes")
                 .select {
@@ -1188,7 +1200,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching notes for subject $subjectId", e)
-            emptyList()
+            // Surface the failure instead of masking it as an empty list.
+            throw e
         }
     }
 
@@ -1196,8 +1209,10 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         val topic = getTopicById(topicId)
         if (topic != null && topic.notes.isNotEmpty()) return@withContext topic.notes
 
-        val client = SupabaseClientProvider.client ?: return@withContext emptyList()
-        val userId = getUserId() ?: return@withContext emptyList()
+        val client = SupabaseClientProvider.client
+            ?: throw IllegalStateException("Supabase is not configured.")
+        val userId = getUserId()
+            ?: throw IllegalStateException("User is not authenticated.")
         try {
             val dtos: List<NoteDto> = client.from("notes")
                 .select {
@@ -1222,7 +1237,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching notes for topic $topicId", e)
-            emptyList()
+            // Surface the failure instead of masking it as an empty list.
+            throw e
         }
     }
 

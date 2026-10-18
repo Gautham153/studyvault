@@ -19,7 +19,9 @@ ON CONFLICT (id) DO UPDATE SET
 -- 2. Storage RLS Policies for 'study-materials' bucket
 -- Storage objects path structure: {userId}/{subjectId}/{uniqueFileId}_{safeFileName}
 -- The first folder segment must strictly match auth.uid()::text to guarantee user isolation.
+-- Each policy is dropped first so this migration can be re-run safely (idempotent).
 
+DROP POLICY IF EXISTS "Users can upload their own study materials to storage" ON storage.objects;
 CREATE POLICY "Users can upload their own study materials to storage"
 ON storage.objects FOR INSERT
 TO authenticated
@@ -28,6 +30,7 @@ WITH CHECK (
     AND (storage.foldername(name))[1] = (auth.uid())::text
 );
 
+DROP POLICY IF EXISTS "Users can read their own study materials from storage" ON storage.objects;
 CREATE POLICY "Users can read their own study materials from storage"
 ON storage.objects FOR SELECT
 TO authenticated
@@ -36,6 +39,7 @@ USING (
     AND (storage.foldername(name))[1] = (auth.uid())::text
 );
 
+DROP POLICY IF EXISTS "Users can update their own study materials in storage" ON storage.objects;
 CREATE POLICY "Users can update their own study materials in storage"
 ON storage.objects FOR UPDATE
 TO authenticated
@@ -48,6 +52,7 @@ WITH CHECK (
     AND (storage.foldername(name))[1] = (auth.uid())::text
 );
 
+DROP POLICY IF EXISTS "Users can delete their own study materials from storage" ON storage.objects;
 CREATE POLICY "Users can delete their own study materials from storage"
 ON storage.objects FOR DELETE
 TO authenticated
@@ -83,13 +88,19 @@ CREATE INDEX IF NOT EXISTS idx_study_materials_created_at ON public.study_materi
 ALTER TABLE public.study_materials ENABLE ROW LEVEL SECURITY;
 
 -- 6. Row Level Security Policies
+-- Policies are dropped first so this migration is idempotent and can be safely re-run.
+-- NOTE: These policies assume public.subjects and public.units both expose a `user_id`
+-- column (as established by earlier migrations). If a real schema does not have those
+-- columns, the ownership predicates must be adjusted to the actual schema before applying.
 -- SELECT: Users can only view their own study materials
+DROP POLICY IF EXISTS "Users can view own study materials" ON public.study_materials;
 CREATE POLICY "Users can view own study materials"
 ON public.study_materials FOR SELECT
 TO authenticated
 USING (auth.uid() = user_id);
 
 -- INSERT: Enforce ownership, valid subject, unit belonging to subject, and topic belonging to unit/subject via units join
+DROP POLICY IF EXISTS "Users can insert own study materials" ON public.study_materials;
 CREATE POLICY "Users can insert own study materials"
 ON public.study_materials FOR INSERT
 TO authenticated
@@ -121,6 +132,7 @@ WITH CHECK (
 );
 
 -- UPDATE: Enforce ownership and strict relational hierarchy checks via units join
+DROP POLICY IF EXISTS "Users can update own study materials" ON public.study_materials;
 CREATE POLICY "Users can update own study materials"
 ON public.study_materials FOR UPDATE
 TO authenticated
@@ -153,6 +165,7 @@ WITH CHECK (
 );
 
 -- DELETE: Users can delete their own study materials
+DROP POLICY IF EXISTS "Users can delete own study materials" ON public.study_materials;
 CREATE POLICY "Users can delete own study materials"
 ON public.study_materials FOR DELETE
 TO authenticated

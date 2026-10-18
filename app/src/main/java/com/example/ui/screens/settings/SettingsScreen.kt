@@ -81,7 +81,6 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     authViewModel: AuthViewModel
 ) {
-    var darkModeEnabled by remember { mutableStateOf(true) }
     var showSignOutDialog by remember { mutableStateOf(false) }
     var isSigningOut by remember { mutableStateOf(false) }
     var signOutErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -186,22 +185,20 @@ fun SettingsScreen(
                 }
             }
 
-            // Academic Details
+            // Academic Details (informational)
             item {
-                SettingsOptionItem(
+                SettingsInfoItem(
                     icon = Icons.Default.School,
                     title = "Academic Details",
-                    subtitle = "${overallProgress.semester} • Computer Science",
-                    onClick = {}
+                    subtitle = "${overallProgress.semester} • Computer Science"
                 )
             }
 
             item {
-                SettingsOptionItem(
+                SettingsInfoItem(
                     icon = Icons.Default.EventNote,
                     title = "Exam Dates",
-                    subtitle = "${upcomingExams.size} upcoming exams scheduled",
-                    onClick = {}
+                    subtitle = "${upcomingExams.size} upcoming exams scheduled"
                 )
             }
 
@@ -231,7 +228,7 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Dark Mode",
+                                    text = "Dark mode (always on)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )
@@ -239,12 +236,12 @@ fun SettingsScreen(
                         }
 
                         Switch(
-                            checked = darkModeEnabled,
-                            onCheckedChange = { darkModeEnabled = it },
+                            checked = true,
+                            onCheckedChange = null,
+                            enabled = false,
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = TextPrimary,
-                                checkedTrackColor = PrimaryBlueLight,
-                                uncheckedTrackColor = SurfaceElevated
+                                disabledCheckedThumbColor = TextPrimary,
+                                disabledCheckedTrackColor = PrimaryBlueLight
                             )
                         )
                     }
@@ -252,11 +249,10 @@ fun SettingsScreen(
             }
 
             item {
-                SettingsOptionItem(
+                SettingsInfoItem(
                     icon = Icons.Default.Notifications,
                     title = "Notifications",
-                    subtitle = "Revision reminders & exam alerts",
-                    onClick = {}
+                    subtitle = "Revision reminders & exam alerts"
                 )
             }
 
@@ -301,20 +297,18 @@ fun SettingsScreen(
             }
 
             item {
-                SettingsOptionItem(
+                SettingsInfoItem(
                     icon = Icons.Default.HelpOutline,
                     title = "Help & Support",
-                    subtitle = "FAQs & feedback",
-                    onClick = {}
+                    subtitle = "FAQs & feedback"
                 )
             }
 
             item {
-                SettingsOptionItem(
+                SettingsInfoItem(
                     icon = Icons.Default.Info,
                     title = "About StudyVault",
-                    subtitle = "Version 1.1.0 • Supabase Auth",
-                    onClick = {}
+                    subtitle = "Version 1.1.0 • Supabase Auth"
                 )
             }
 
@@ -446,52 +440,40 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsOptionItem(
+private fun SettingsInfoItem(
     icon: ImageVector,
     title: String,
-    subtitle: String,
-    onClick: () -> Unit
+    subtitle: String
 ) {
     CardWithSubtleBorder(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick
+        modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = PrimaryBlueLight,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(14.dp))
-                Column {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = TextPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextMuted
-                    )
-                }
-            }
-
             Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                imageVector = icon,
                 contentDescription = null,
-                tint = TextMuted,
-                modifier = Modifier.size(14.dp)
+                tint = PrimaryBlueLight,
+                modifier = Modifier.size(22.dp)
             )
+            Spacer(modifier = Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+            }
         }
     }
 }

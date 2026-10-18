@@ -32,26 +32,41 @@ class NotesViewModel(
     private var loadRequestToken = 0
 
     init {
-        // Observe repository subjects updates to keep notes reactive
+        // Observe repository subjects updates to keep notes reactive.
+        // Every refresh verifies the active request token and resource before publishing,
+        // so a late result from a previous topic/subject can never overwrite current UI.
         viewModelScope.launch {
             repository.subjects.collect { _ ->
+                val requestToken = loadRequestToken
                 val tId = activeTopicId
                 val sId = activeSubjectId
-                if (tId != null) {
-                    val notes = repository.getNotesForTopic(tId)
-                    _uiState.update { current ->
-                        current.copy(
-                            notes = notes,
-                            isEmpty = notes.isEmpty()
-                        )
+                try {
+                    if (tId != null) {
+                        val notes = repository.getNotesForTopic(tId)
+                        if (requestToken == loadRequestToken && activeTopicId == tId) {
+                            _uiState.update { current ->
+                                current.copy(
+                                    notes = notes,
+                                    isEmpty = notes.isEmpty()
+                                )
+                            }
+                        }
+                    } else if (sId != null) {
+                        val notes = repository.getNotesForSubject(sId)
+                        if (requestToken == loadRequestToken && activeSubjectId == sId) {
+                            _uiState.update { current ->
+                                current.copy(
+                                    notes = notes,
+                                    isEmpty = notes.isEmpty()
+                                )
+                            }
+                        }
                     }
-                } else if (sId != null) {
-                    val notes = repository.getNotesForSubject(sId)
-                    _uiState.update { current ->
-                        current.copy(
-                            notes = notes,
-                            isEmpty = notes.isEmpty()
-                        )
+                } catch (e: Exception) {
+                    if (requestToken == loadRequestToken) {
+                        _uiState.update {
+                            it.copy(errorMessage = e.message ?: "Failed to refresh notes.")
+                        }
                     }
                 }
             }
@@ -59,6 +74,7 @@ class NotesViewModel(
     }
 
     fun loadForTopic(topicId: String) {
+        val resourceChanged = activeTopicId != topicId || activeSubjectId != null
         val requestToken = ++loadRequestToken
         activeTopicId = topicId
         activeSubjectId = null
@@ -66,6 +82,10 @@ class NotesViewModel(
         _uiState.update {
             it.copy(
                 isLoading = true,
+                // Clear the previous resource's notes so they are never displayed for
+                // the newly selected topic while the load is in flight.
+                notes = if (resourceChanged) emptyList() else it.notes,
+                isEmpty = if (resourceChanged) true else it.isEmpty,
                 errorMessage = null,
                 successMessage = null
             )
@@ -98,6 +118,7 @@ class NotesViewModel(
     }
 
     fun loadForSubject(subjectId: String) {
+        val resourceChanged = activeSubjectId != subjectId || activeTopicId != null
         val requestToken = ++loadRequestToken
         activeSubjectId = subjectId
         activeTopicId = null
@@ -105,6 +126,9 @@ class NotesViewModel(
         _uiState.update {
             it.copy(
                 isLoading = true,
+                // Clear the previous resource's notes while the new subject loads.
+                notes = if (resourceChanged) emptyList() else it.notes,
+                isEmpty = if (resourceChanged) true else it.isEmpty,
                 errorMessage = null,
                 successMessage = null
             )
@@ -142,6 +166,7 @@ class NotesViewModel(
         title: String,
         content: String = ""
     ) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
         val trimmedTitle = title.trim()
         if (trimmedTitle.isBlank()) {
             _uiState.update { it.copy(errorMessage = "Note title cannot be blank.") }
@@ -182,6 +207,7 @@ class NotesViewModel(
     }
 
     fun updateNote(note: NoteItem) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
         val trimmedTitle = note.title.trim()
         if (trimmedTitle.isBlank()) {
             _uiState.update { it.copy(errorMessage = "Note title cannot be blank.") }
@@ -216,6 +242,7 @@ class NotesViewModel(
     }
 
     fun deleteNote(noteId: String) {
+        if (_uiState.value.isSaving) return // guard against duplicate submissions
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {

@@ -60,6 +60,17 @@ class MockStudyMaterialRepository private constructor() : StudyMaterialRepositor
         fileBytes: ByteArray,
         onProgress: ((Float) -> Unit)?
     ): Result<MaterialItem> {
+        // Mirror the Supabase repository constraints: 25 MB max and no empty files.
+        if (fileBytes.size > MAX_FILE_SIZE_BYTES) {
+            val msg = "File size exceeds maximum allowed limit of 25 MB."
+            _errorMessage.value = msg
+            return Result.failure(IllegalArgumentException(msg))
+        }
+        if (fileBytes.isEmpty()) {
+            val msg = "Cannot upload an empty file."
+            _errorMessage.value = msg
+            return Result.failure(IllegalArgumentException(msg))
+        }
         val newItem = MaterialItem(
             id = UUID.randomUUID().toString(),
             title = originalFilename.substringBeforeLast(".").ifBlank { originalFilename },
@@ -89,8 +100,13 @@ class MockStudyMaterialRepository private constructor() : StudyMaterialRepositor
     }
 
     companion object {
+        const val MAX_FILE_SIZE_BYTES = 25L * 1024L * 1024L // 25 MB, consistent with SupabaseStudyMaterialRepository
+
         val instance: MockStudyMaterialRepository by lazy {
             MockStudyMaterialRepository()
         }
+
+        /** Creates an isolated instance for unit tests so tests never share mutable singleton state. */
+        fun createIsolated(): MockStudyMaterialRepository = MockStudyMaterialRepository()
     }
 }

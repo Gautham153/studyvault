@@ -40,7 +40,7 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
     private val _errorMessage = MutableStateFlow<String?>(null)
     override val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    private var loadToken = 0
+    private val loadTracker = PerResourceLoadTracker()
     private val isoDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
     }
@@ -52,7 +52,9 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
     }
 
     override fun clearData() {
-        loadToken++
+        // Invalidate every outstanding request so no stale response can publish state,
+        // then clear the user-scoped cache.
+        loadTracker.invalidateAll()
         _materials.value = emptyList()
         _isUploading.value = false
         _uploadProgress.value = null
@@ -60,7 +62,8 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
     }
 
     override suspend fun loadMaterials(subjectId: String?): Result<List<MaterialItem>> = withContext(Dispatchers.IO) {
-        val currentToken = ++loadToken
+        val trackerKey = subjectId ?: ALL_SUBJECTS_KEY
+        val token = loadTracker.next(trackerKey)
         val client = SupabaseClientProvider.client
             ?: return@withContext Result.failure(IllegalStateException("Supabase is not configured."))
         val userId = getUserId()
@@ -86,8 +89,11 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
                     .decodeList()
             }
 
-            if (currentToken != loadToken || getUserId() != userId) {
-                return@withContext Result.success(emptyList())
+            // Discard stale responses: either a newer request for the same resource started,
+            // or the user/session changed while this request was in flight. A discarded request
+            // must never be reported to callers as a successful empty load.
+            if (!loadTracker.isCurrent(trackerKey, token) || getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Study material load discarded: superseded or session changed."))
             }
 
             val domainItems = dtos.map { dtoToDomain(it) }
@@ -101,7 +107,7 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
             Result.success(domainItems)
         } catch (e: Exception) {
             Log.e(TAG, "Error loading study materials from Supabase", e)
-            if (currentToken == loadToken && getUserId() == userId) {
+            if (loadTracker.isCurrent(trackerKey, token) && getUserId() == userId) {
                 _errorMessage.value = e.message ?: "Failed to load study materials."
             }
             Result.failure(e)
@@ -109,8 +115,8 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
     }
 
     override suspend fun getMaterialsForSubject(subjectId: String): List<MaterialItem> {
-        val cached = _materials.value.filter { it.subjectId == subjectId }
-        if (cached.isNotEmpty()) return cached
+        // Always re-fetch from the repository so a previously cached list can never
+        // resurrect deleted files; an empty result after deletion stays empty.
         loadMaterials(subjectId)
         return _materials.value.filter { it.subjectId == subjectId }
     }
@@ -389,6 +395,7 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
         private const val TAG = "SupabaseStudyMaterialRepository"
         const val BUCKET_NAME = "study-materials"
         const val MAX_FILE_SIZE_BYTES = 25L * 1024L * 1024L // 25 MB safe practical limit
+        private const val ALL_SUBJECTS_KEY = "__all_subjects__"
 
         val instance: SupabaseStudyMaterialRepository by lazy {
             SupabaseStudyMaterialRepository()

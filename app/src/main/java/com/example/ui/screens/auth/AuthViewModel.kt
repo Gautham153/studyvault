@@ -60,14 +60,33 @@ class AuthViewModel(
     val forgotPasswordState: StateFlow<ForgotPasswordUiState> = _forgotPasswordState.asStateFlow()
 
     init {
-        // Sync genuine authenticated user into StudyVault profile metadata when authState changes
+        // Sync genuine authenticated user into StudyVault profile metadata when authState
+        // changes, and drop every cached repository when the authenticated identity changes
+        // (account switch without an explicit sign-out, or a session ending outside the
+        // sign-out flow) so one user's data can never be shown to another.
         viewModelScope.launch {
+            var lastUserId: String? = null
             authRepository.authState.collect { state ->
-                if (state is AuthState.Authenticated) {
-                    studyVaultRepository.setAuthenticatedUser(
-                        email = state.user.email,
-                        displayName = state.user.displayName
-                    )
+                when (state) {
+                    is AuthState.Authenticated -> {
+                        if (lastUserId != null && lastUserId != state.user.id) {
+                            studyVaultRepository.clearData()
+                            com.example.data.repository.StudyMaterialRepositoryProvider.repository.clearData()
+                        }
+                        lastUserId = state.user.id
+                        studyVaultRepository.setAuthenticatedUser(
+                            email = state.user.email,
+                            displayName = state.user.displayName
+                        )
+                    }
+                    is AuthState.Unauthenticated -> {
+                        if (lastUserId != null) {
+                            studyVaultRepository.clearData()
+                            com.example.data.repository.StudyMaterialRepositoryProvider.repository.clearData()
+                        }
+                        lastUserId = null
+                    }
+                    else -> Unit
                 }
             }
         }

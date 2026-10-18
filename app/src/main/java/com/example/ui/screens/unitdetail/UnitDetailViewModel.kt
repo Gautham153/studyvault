@@ -42,6 +42,9 @@ class UnitDetailViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    // Live materials for this unit, sourced exclusively from the material repository.
+    // No cached unit-materials fallback: an empty repository list stays empty after loads
+    // and deletions, so removed files cannot reappear.
     val materials: StateFlow<List<MaterialItem>> = combine(
         _unit,
         materialRepository.materials,
@@ -49,13 +52,8 @@ class UnitDetailViewModel(
     ) { currentU, allMats, loadedId ->
         val uId = currentU?.id
         val sId = currentSubjectId
-        if (uId != null && sId != null) {
-            val fromRepo = allMats.filter { it.subjectId == sId && it.unitId == uId }
-            if (loadedId == uId) {
-                fromRepo
-            } else {
-                if (fromRepo.isNotEmpty()) fromRepo else currentU.materials
-            }
+        if (uId != null && sId != null && loadedId == uId) {
+            allMats.filter { it.subjectId == sId && it.unitId == uId }
         } else {
             emptyList()
         }
@@ -75,8 +73,12 @@ class UnitDetailViewModel(
     }
 
     fun loadUnit(subjectId: String, unitId: String) {
-        if (currentUnitId != unitId) {
+        if (currentUnitId != unitId || currentSubjectId != subjectId) {
+            // Resource changed: reset load tracking and messages so nothing from the
+            // previously viewed unit/subject leaks into this one.
             _loadedUnitId.value = null
+            _statusMessage.value = null
+            _errorMessage.value = null
         }
         currentSubjectId = subjectId
         currentUnitId = unitId
@@ -85,7 +87,8 @@ class UnitDetailViewModel(
         val requestedUnitId = unitId
         viewModelScope.launch {
             val result = materialRepository.loadMaterials(subjectId)
-            if (result.isSuccess && currentUnitId == requestedUnitId) {
+            // Mark loaded only on a genuine, current success for this unit.
+            if (result.getOrNull() != null && currentUnitId == requestedUnitId && currentSubjectId == subjectId) {
                 _loadedUnitId.value = requestedUnitId
             }
         }
