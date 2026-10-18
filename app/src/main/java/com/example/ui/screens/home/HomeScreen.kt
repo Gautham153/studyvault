@@ -90,7 +90,7 @@ fun HomeScreen(
     val recentRevisions by viewModel.recentRevisions.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val revisionPriorities = todayPlan
-        .filter { it.status == TopicStatus.NEEDS_REVISION }
+        .filter { it.status == TopicStatus.NEEDS_REVISION || it.action == StudyAction.REVISE }
         .take(3)
         .map { StudyPlanning.recommendationToStudyItem(it) }
     val recentMaterials = viewModel.getRecentlyAddedMaterials()

@@ -46,7 +46,7 @@ class StudyViewModel(
             StudyFilter.ALL -> recommendations
                 .map { StudyPlanning.recommendationToStudyItem(it) }
             StudyFilter.NEEDS_REVISION -> recommendations
-                .filter { it.status == TopicStatus.NEEDS_REVISION }
+                .filter { it.status == TopicStatus.NEEDS_REVISION || it.action == StudyAction.REVISE }
                 .map { StudyPlanning.recommendationToStudyItem(it) }
             StudyFilter.RECENTLY_REVISED -> StudyPlanning.buildRevisionStudyItems(subjects, revisionsByTopic)
         }

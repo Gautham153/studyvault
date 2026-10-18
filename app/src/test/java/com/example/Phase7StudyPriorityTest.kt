@@ -376,6 +376,51 @@ class Phase7StudyPriorityTest {
         subscription.cancel()
     }
 
+    /**
+     * Regression: the Needs Revision filter must keep completed topics the engine recommends
+     * revising (action == REVISE), not only topics stored as [TopicStatus.NEEDS_REVISION], while
+     * a completed topic that was just revised (no revision need) must disappear. Explicitly
+     * flagged topics keep behaving exactly as before.
+     */
+    @Test
+    fun `needs revision filter keeps completed topics flagged for revision and hides recently revised ones`() {
+        val repository = MockStudyVaultRepository.createIsolated()
+        val viewModel = StudyViewModel(repository)
+        val subscription = CoroutineScope(Dispatchers.Main).launch { viewModel.studyItems.collect {} }
+
+        val completedNeedingRevision = "t_java_u2_7" // completed, never revised -> engine REVISE
+        val completedNoRevisionNeed = "t_java_u2_1"  // completed + idle -> REVISE, revised below
+        val notStarted = "t_java_u2_5"
+
+        viewModel.setFilter(StudyFilter.NEEDS_REVISION)
+        val initialIds = viewModel.studyItems.value.map { it.topicId }
+        assertEquals(
+            StudyAction.REVISE,
+            repository.studyRecommendations.value.first { it.topicId == completedNeedingRevision }.action
+        )
+        assertEquals(
+            StudyAction.REVISE,
+            repository.studyRecommendations.value.first { it.topicId == completedNoRevisionNeed }.action
+        )
+        assertTrue("Completed topic flagged for revision must appear", completedNeedingRevision in initialIds)
+        assertTrue("Idle completed topic flagged by the engine must appear", completedNoRevisionNeed in initialIds)
+        assertFalse("Not-started topic without a revision flag must stay hidden", notStarted in initialIds)
+
+        runBlocking { repository.markTopicRevised(completedNoRevisionNeed) }
+        val afterIds = viewModel.studyItems.value.map { it.topicId }
+        assertFalse(
+            "Recently revised completed topic with no revision need must disappear",
+            completedNoRevisionNeed in afterIds
+        )
+        assertTrue("Other completed topics still needing revision must remain", completedNeedingRevision in afterIds)
+
+        // Explicitly flagged topics (stored status) must keep appearing exactly as before.
+        runBlocking { repository.updateTopicStatus(notStarted, TopicStatus.NEEDS_REVISION) }
+        assertTrue("Explicitly flagged topic must appear", notStarted in viewModel.studyItems.value.map { it.topicId })
+
+        subscription.cancel()
+    }
+
     // --- Recommendation explanations ---
 
     @Test
