@@ -7,11 +7,13 @@ import com.example.data.model.MaterialItem
 import com.example.data.model.NoteItem
 import com.example.data.model.OverallProgress
 import com.example.data.model.QuestionItem
+import com.example.data.model.RevisionEvent
 import com.example.data.model.StudyItem
 import com.example.data.model.Subject
 import com.example.data.model.TopicModel
 import com.example.data.model.TopicStatus
 import com.example.data.model.UnitModel
+import com.example.util.StudyDateUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -291,23 +293,62 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     private val _subjects = MutableStateFlow(defaultSubjects)
     override val subjects: StateFlow<List<Subject>> = _subjects.asStateFlow()
 
-    private val defaultExams = listOf(
-        ExamItem("e1", "s_java", "Java", "coffee", "Oct 20, 2026", 12, 74, "CS201", "Main Hall B, Seat 32"),
-        ExamItem("e2", "s_dbms", "DBMS", "database", "Oct 23, 2026", 15, 61, "CS202", "Engineering Block 2, Room 104"),
-        ExamItem("e3", "s_ai", "Artificial Intelligence", "ai", "Nov 5, 2026", 28, 48, "CS305", "Auditorium Annex")
+    private val mutableExams = mutableListOf(
+        ExamItem("e1", "s_java", "Java", "coffee", "Oct 20, 2026", 0, 0, "CS201", "Main Hall B, Seat 32", name = "Mid Term Exam"),
+        ExamItem("e2", "s_dbms", "DBMS", "database", "Oct 23, 2026", 0, 0, "CS202", "Engineering Block 2, Room 104", name = "Mid Term Exam"),
+        ExamItem("e3", "s_ai", "Artificial Intelligence", "ai", "Nov 5, 2026", 0, 0, "CS305", "Auditorium Annex", name = "Semester Final")
     )
-    private val _upcomingExams = MutableStateFlow(defaultExams)
+
+    private val mutableRevisionEvents = mutableListOf<RevisionEvent>()
+
+    private val _upcomingExams = MutableStateFlow<List<ExamItem>>(emptyList())
     override val upcomingExams: StateFlow<List<ExamItem>> = _upcomingExams.asStateFlow()
 
-    private val defaultPriorityItems = listOf(
-        StudyItem("t_java_u2_1", "s_java", "u_java_2", "Exception Handling", "Java", "Unit 2", 95, "High Priority", "Revision due today"),
-        StudyItem("t_dbms_u2_1", "s_dbms", "u_dbms_2", "DBMS Normalization", "DBMS", "Unit 2", 88, "High Priority", "Not completed"),
-        StudyItem("t_ai_u3_1", "s_ai", "u_ai_3", "A* Search", "AI", "Unit 3", 81, "High Priority", "Revision due tomorrow"),
-        StudyItem("t_java_u2_6", "s_java", "u_java_2", "Java Reflection", "Java", "Unit 4", 73, "Medium Priority", "Learning in progress"),
-        StudyItem("t_dbms_u2_2", "s_dbms", "u_dbms_2", "SQL Joins", "DBMS", "Unit 2", 69, "Medium Priority", "Review suggested")
-    )
-    private val _priorityStudyItems = MutableStateFlow(defaultPriorityItems)
+    private val _pastExams = MutableStateFlow<List<ExamItem>>(emptyList())
+    override val pastExams: StateFlow<List<ExamItem>> = _pastExams.asStateFlow()
+
+    private val _recentRevisions = MutableStateFlow<List<RevisionEvent>>(emptyList())
+    override val recentRevisions: StateFlow<List<RevisionEvent>> = _recentRevisions.asStateFlow()
+
+    private val _priorityStudyItems = MutableStateFlow<List<StudyItem>>(emptyList())
     override val priorityStudyItems: StateFlow<List<StudyItem>> = _priorityStudyItems.asStateFlow()
+
+    private val _isLoading = MutableStateFlow(false)
+    override val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    init {
+        seedRevisionHistory()
+        recalculateDerivedState()
+    }
+
+    private fun seedRevisionHistory() {
+        recordSeedRevision("t_java_u2_1", "2026-10-07T09:00:00Z")
+        recordSeedRevision("t_java_u2_2", "2026-10-05T09:00:00Z")
+        recordSeedRevision("t_java_u2_1", "2026-10-02T09:00:00Z")
+    }
+
+    private fun recordSeedRevision(topicId: String, revisedAt: String) {
+        val topic = getTopicById(topicId) ?: return
+        val subject = getSubjectById(topic.subjectId)
+        val unit = subject?.units?.find { it.id == topic.unitId }
+        val number = (mutableRevisionEvents.filter { it.topicId == topicId }.maxOfOrNull { it.revisionNumber } ?: 0) + 1
+        mutableRevisionEvents.add(
+            RevisionEvent(
+                id = "r_${topicId}_$number",
+                topicId = topicId,
+                subjectId = topic.subjectId,
+                unitId = topic.unitId,
+                topicName = topic.title,
+                subjectName = subject?.name ?: "",
+                unitName = unit?.title ?: "",
+                revisionNumber = number,
+                previousStatus = topic.status,
+                newStatus = topic.status,
+                revisedAt = revisedAt,
+                revisedAtDisplay = StudyDateUtils.toDisplayDate(revisedAt)
+            )
+        )
+    }
 
     override fun getTodayStudyItems(): List<StudyItem> {
         return _priorityStudyItems.value.take(3)
@@ -342,20 +383,251 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         return null
     }
 
-    override fun updateTopicStatus(topicId: String, status: TopicStatus) {
+    override suspend fun updateTopicStatus(topicId: String, status: TopicStatus): Result<Unit> {
+        val topic = getTopicById(topicId)
+            ?: return Result.failure(NoSuchElementException("Topic not found."))
+
+        val now = StudyDateUtils.nowIsoTimestamp()
         _subjects.update { currentSubjects ->
             currentSubjects.map { subject ->
                 subject.copy(
                     units = subject.units.map { unit ->
                         unit.copy(
-                            topics = unit.topics.map { topic ->
-                                if (topic.id == topicId) topic.copy(status = status) else topic
+                            topics = unit.topics.map { t ->
+                                if (t.id == topicId) {
+                                    t.copy(
+                                        status = status,
+                                        completedAt = if (status == TopicStatus.COMPLETED) t.completedAt ?: now else null,
+                                        lastStudiedDate = if (status == TopicStatus.NOT_STARTED) {
+                                            t.lastStudiedDate
+                                        } else {
+                                            StudyDateUtils.toDisplayDate(now)
+                                        }
+                                    )
+                                } else t
                             }
                         )
                     }
                 )
             }
         }
+        recalculateDerivedState()
+        return Result.success(Unit)
+    }
+
+    override suspend fun markTopicRevised(topicId: String, notes: String?): Result<RevisionEvent> {
+        val topic = getTopicById(topicId)
+            ?: return Result.failure(NoSuchElementException("Topic not found."))
+        val subject = getSubjectById(topic.subjectId)
+        val unit = subject?.units?.find { it.id == topic.unitId }
+
+        val now = StudyDateUtils.nowIsoTimestamp()
+        val number = (mutableRevisionEvents.filter { it.topicId == topicId }.maxOfOrNull { it.revisionNumber } ?: 0) + 1
+        val nextStatus = if (topic.status == TopicStatus.NEEDS_REVISION) TopicStatus.COMPLETED else topic.status
+
+        val event = RevisionEvent(
+            id = "r_${System.currentTimeMillis()}",
+            topicId = topicId,
+            subjectId = topic.subjectId,
+            unitId = topic.unitId,
+            topicName = topic.title,
+            subjectName = subject?.name ?: "",
+            unitName = unit?.title ?: "",
+            revisionNumber = number,
+            previousStatus = topic.status,
+            newStatus = nextStatus,
+            revisedAt = now,
+            revisedAtDisplay = StudyDateUtils.toDisplayDate(now),
+            notes = notes?.trim()?.takeIf { it.isNotEmpty() }
+        )
+        mutableRevisionEvents.add(event)
+
+        _subjects.update { currentSubjects ->
+            currentSubjects.map { s ->
+                s.copy(
+                    units = s.units.map { u ->
+                        u.copy(
+                            topics = u.topics.map { t ->
+                                if (t.id != topicId) {
+                                    t
+                                } else {
+                                    t.copy(
+                                        status = nextStatus,
+                                        revisionCount = number,
+                                        lastRevisedAt = now,
+                                        lastStudiedDate = StudyDateUtils.toDisplayDate(now),
+                                        completedAt = if (nextStatus == TopicStatus.COMPLETED) {
+                                            t.completedAt ?: now
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                    }
+                )
+            }
+        }
+        recalculateDerivedState()
+        return Result.success(event)
+    }
+
+    override fun getRevisionEventsForTopic(topicId: String): List<RevisionEvent> =
+        StudyPlanning.sortRevisionEventsNewestFirst(mutableRevisionEvents.filter { it.topicId == topicId })
+
+    override fun getExamById(examId: String): ExamItem? = mutableExams.find { it.id == examId }
+
+    override suspend fun createExam(
+        subjectId: String,
+        name: String,
+        examDate: String,
+        venue: String,
+        description: String?
+    ): Result<ExamItem> {
+        val subject = resolveSubject(subjectId)
+            ?: return Result.failure(IllegalArgumentException("Subject not found. Create the subject before scheduling an exam."))
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            return Result.failure(IllegalArgumentException("Exam name cannot be blank."))
+        }
+        val iso = StudyDateUtils.parseExamDateToIso(examDate)
+            ?: return Result.failure(IllegalArgumentException("Invalid exam date '$examDate'. Use a format like 'Nov 15, 2026' or '2026-11-15'."))
+
+        val exam = ExamItem(
+            id = "e_${System.currentTimeMillis()}",
+            subjectId = subject.id,
+            subjectName = subject.name,
+            iconKey = subject.iconKey,
+            examDate = StudyDateUtils.toDisplayDate(iso),
+            daysRemaining = StudyDateUtils.daysFromToday(iso) ?: 0,
+            preparationPercent = subject.preparationPercent,
+            code = subject.code,
+            venue = venue.trim().ifBlank { "Venue not set" },
+            name = trimmedName,
+            description = description?.trim()?.takeIf { it.isNotEmpty() },
+            isoDate = iso
+        )
+        mutableExams.add(exam)
+        recalculateDerivedState()
+        return Result.success(exam)
+    }
+
+    override suspend fun updateExam(
+        examId: String,
+        subjectId: String,
+        name: String,
+        examDate: String,
+        venue: String,
+        description: String?
+    ): Result<ExamItem> {
+        val index = mutableExams.indexOfFirst { it.id == examId }
+        if (index == -1) {
+            return Result.failure(NoSuchElementException("Exam not found."))
+        }
+        val subject = resolveSubject(subjectId)
+            ?: return Result.failure(IllegalArgumentException("Subject not found."))
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            return Result.failure(IllegalArgumentException("Exam name cannot be blank."))
+        }
+        val iso = StudyDateUtils.parseExamDateToIso(examDate)
+            ?: return Result.failure(IllegalArgumentException("Invalid exam date '$examDate'. Use a format like 'Nov 15, 2026' or '2026-11-15'."))
+
+        val updated = mutableExams[index].copy(
+            subjectId = subject.id,
+            subjectName = subject.name,
+            iconKey = subject.iconKey,
+            examDate = StudyDateUtils.toDisplayDate(iso),
+            daysRemaining = StudyDateUtils.daysFromToday(iso) ?: 0,
+            preparationPercent = subject.preparationPercent,
+            code = subject.code,
+            venue = venue.trim().ifBlank { "Venue not set" },
+            name = trimmedName,
+            description = description?.trim()?.takeIf { it.isNotEmpty() },
+            isoDate = iso
+        )
+        mutableExams[index] = updated
+        recalculateDerivedState()
+        return Result.success(updated)
+    }
+
+    override suspend fun deleteExam(examId: String): Result<Unit> {
+        val removed = mutableExams.removeAll { it.id == examId }
+        if (!removed) return Result.failure(NoSuchElementException("Exam not found."))
+        recalculateDerivedState()
+        return Result.success(Unit)
+    }
+
+    private fun resolveSubject(subjectId: String): Subject? {
+        val trimmed = subjectId.trim()
+        if (trimmed.isEmpty()) return null
+        return _subjects.value.find {
+            it.id == trimmed ||
+                it.name.equals(trimmed, ignoreCase = true) ||
+                it.code.equals(trimmed, ignoreCase = true)
+        }
+    }
+
+    private fun recalculateDerivedState() {
+        val subjects = _subjects.value.map { subject ->
+            val units = subject.units.map { unit ->
+                if (unit.topics.isEmpty()) unit else unit.copy(preparationPercent = StudyPlanning.preparationPercent(unit.topics))
+            }
+            val trackedTopics = units.flatMap { it.topics }
+            if (trackedTopics.isEmpty()) {
+                subject.copy(units = units)
+            } else {
+                subject.copy(
+                    units = units,
+                    preparationPercent = StudyPlanning.preparationPercent(trackedTopics),
+                    topicsCount = trackedTopics.size
+                )
+            }
+        }
+        _subjects.value = subjects
+
+        val revisionEventsByTopic = mutableRevisionEvents.groupBy { it.topicId }
+        _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(subjects, revisionEventsByTopic)
+        _recentRevisions.value = StudyPlanning.recentRevisions(mutableRevisionEvents)
+        publishExams(subjects)
+
+        val topics = StudyPlanning.allTopics(subjects)
+        val counts = StudyPlanning.topicCounts(topics)
+        _overallProgress.update { current ->
+            current.copy(
+                overallPercentage = if (topics.isEmpty()) current.overallPercentage else StudyPlanning.preparationPercent(topics),
+                subjectsCount = subjects.size,
+                upcomingExamsCount = _upcomingExams.value.size,
+                totalTopics = counts.total,
+                completedTopics = counts.completed,
+                inProgressTopics = counts.inProgress,
+                topicsNeedingRevision = counts.needsRevision
+            )
+        }
+    }
+
+    private fun publishExams(subjects: List<Subject>) {
+        val derived = mutableExams.map { exam ->
+            val subject = subjects.find { it.id == exam.subjectId }
+                ?: subjects.find { it.name.equals(exam.subjectName, ignoreCase = true) }
+            val iso = exam.isoDate.ifBlank { StudyDateUtils.parseExamDateToIso(exam.examDate).orEmpty() }
+            exam.copy(
+                subjectName = subject?.name ?: exam.subjectName,
+                iconKey = subject?.iconKey ?: exam.iconKey,
+                code = subject?.code ?: exam.code,
+                preparationPercent = subject?.preparationPercent ?: exam.preparationPercent,
+                examDate = if (iso.isBlank()) exam.examDate else StudyDateUtils.toDisplayDate(iso),
+                isoDate = iso,
+                daysRemaining = StudyDateUtils.daysFromToday(iso) ?: exam.daysRemaining
+            )
+        }
+        _upcomingExams.value = derived
+            .filter { it.daysRemaining >= 0 }
+            .sortedBy { it.daysRemaining }
+        _pastExams.value = derived
+            .filter { it.daysRemaining < 0 }
+            .sortedByDescending { it.isoDate }
     }
 
     override fun addSubject(subjectName: String, code: String, iconKey: String) {
@@ -375,21 +647,7 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
             )
         )
         _subjects.update { it + newSub }
-        _overallProgress.update { it.copy(subjectsCount = it.subjectsCount + 1) }
-    }
-
-    override fun addExam(subjectName: String, date: String, daysRemaining: Int) {
-        val newExam = ExamItem(
-            id = "e_${System.currentTimeMillis()}",
-            subjectId = "s_custom",
-            subjectName = subjectName,
-            iconKey = "book",
-            examDate = date,
-            daysRemaining = daysRemaining,
-            preparationPercent = 40
-        )
-        _upcomingExams.update { it + newExam }
-        _overallProgress.update { it.copy(upcomingExamsCount = it.upcomingExamsCount + 1) }
+        recalculateDerivedState()
     }
 
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -406,6 +664,8 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
 
     override fun clearData() {
         _errorMessage.value = null
+        _isLoading.value = false
+        recalculateDerivedState()
     }
 
     // In-memory questions and notes storage for tests and mock mode

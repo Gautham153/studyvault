@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.aistudio.studyvault.krsvpt"
+    namespace = "com.example"
     compileSdk = 36
 
     defaultConfig {

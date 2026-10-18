@@ -7,8 +7,10 @@ import com.example.data.model.Importance
 import com.example.data.model.MaterialItem
 import com.example.data.model.NoteItem
 import com.example.data.model.QuestionItem
+import com.example.data.model.RevisionEvent
 import com.example.data.model.TopicModel
 import com.example.data.model.TopicStatus
+import com.example.data.model.displayLabel
 import com.example.data.repository.StudyMaterialRepository
 import com.example.data.repository.StudyMaterialRepositoryProvider
 import com.example.data.repository.StudyVaultRepository
@@ -61,6 +63,15 @@ class TopicDetailViewModel(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
+    private val _isUpdatingStatus = MutableStateFlow(false)
+    val isUpdatingStatus: StateFlow<Boolean> = _isUpdatingStatus.asStateFlow()
+
+    private val _isMarkingRevised = MutableStateFlow(false)
+    val isMarkingRevised: StateFlow<Boolean> = _isMarkingRevised.asStateFlow()
+
+    private val _revisionEvents = MutableStateFlow<List<RevisionEvent>>(emptyList())
+    val revisionEvents: StateFlow<List<RevisionEvent>> = _revisionEvents.asStateFlow()
+
     // Questions and notes for this topic, loaded explicitly from repository queries rather
     // than embedded topic snapshots, so CRUD results (in any repository implementation) are
     // always reflected and deletions cannot resurrect stale embedded copies.
@@ -80,6 +91,7 @@ class TopicDetailViewModel(
                     _topic.value = repository.getTopicById(id)
                     refreshQuestions(id)
                     refreshNotes(id)
+                    refreshRevisionEvents(id)
                 }
             }
         }
@@ -126,11 +138,13 @@ class TopicDetailViewModel(
             _errorMessage.value = null
             _questions.value = emptyList()
             _notes.value = emptyList()
+            _revisionEvents.value = emptyList()
         }
         currentTopicId = topicId
         _topic.value = repository.getTopicById(topicId)
         refreshQuestions(topicId)
         refreshNotes(topicId)
+        refreshRevisionEvents(topicId)
         val subjectId = _topic.value?.subjectId
         if (subjectId != null) {
             val requestedTopicId = topicId
@@ -145,9 +159,72 @@ class TopicDetailViewModel(
     }
 
     fun updateStatus(newStatus: TopicStatus) {
-        _topic.value?.let { current ->
-            repository.updateTopicStatus(current.id, newStatus)
-            _topic.value = current.copy(status = newStatus)
+        val current = _topic.value ?: return
+        if (_isUpdatingStatus.value) return
+        val requestedTopicId = current.id
+        if (current.status == newStatus) return
+
+        _isUpdatingStatus.value = true
+        _errorMessage.value = null
+        _statusMessage.value = null
+        viewModelScope.launch {
+            val result = repository.updateTopicStatus(requestedTopicId, newStatus)
+            result.fold(
+                onSuccess = {
+                    if (currentTopicId == requestedTopicId) {
+                        _statusMessage.value = "Status updated to ${newStatus.displayLabel}"
+                        _topic.value = repository.getTopicById(requestedTopicId)
+                    }
+                },
+                onFailure = { err ->
+                    if (currentTopicId == requestedTopicId) {
+                        _errorMessage.value = err.message ?: "Failed to update status."
+                        _topic.value = repository.getTopicById(requestedTopicId)
+                    }
+                }
+            )
+            _isUpdatingStatus.value = false
+        }
+    }
+
+    fun markRevised(notes: String? = null) {
+        val current = _topic.value ?: return
+        if (_isMarkingRevised.value) return
+        val requestedTopicId = current.id
+
+        _isMarkingRevised.value = true
+        _errorMessage.value = null
+        _statusMessage.value = null
+        viewModelScope.launch {
+            val result = repository.markTopicRevised(requestedTopicId, notes)
+            result.fold(
+                onSuccess = { event ->
+                    if (currentTopicId == requestedTopicId) {
+                        _statusMessage.value = "Revision #${event.revisionNumber} recorded"
+                        _topic.value = repository.getTopicById(requestedTopicId)
+                        refreshRevisionEvents(requestedTopicId)
+                    }
+                },
+                onFailure = { err ->
+                    if (currentTopicId == requestedTopicId) {
+                        _errorMessage.value = err.message ?: "Failed to record revision."
+                    }
+                }
+            )
+            _isMarkingRevised.value = false
+        }
+    }
+
+    private fun refreshRevisionEvents(topicId: String) {
+        if (currentTopicId != topicId) return
+        val events = try {
+            repository.getRevisionEventsForTopic(topicId)
+        } catch (e: Exception) {
+            _errorMessage.value = e.message ?: "Failed to load revision history."
+            emptyList()
+        }
+        if (currentTopicId == topicId) {
+            _revisionEvents.value = events
         }
     }
 

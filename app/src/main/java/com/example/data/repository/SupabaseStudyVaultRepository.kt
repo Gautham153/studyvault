@@ -8,6 +8,7 @@ import com.example.data.model.MaterialItem
 import com.example.data.model.NoteItem
 import com.example.data.model.OverallProgress
 import com.example.data.model.QuestionItem
+import com.example.data.model.RevisionEvent
 import com.example.data.model.StudyItem
 import com.example.data.model.Subject
 import com.example.data.model.TopicModel
@@ -27,6 +28,7 @@ import com.example.data.remote.SubjectDto
 import com.example.data.remote.SupabaseClientProvider
 import com.example.data.remote.TopicDto
 import com.example.data.remote.UnitDto
+import com.example.util.StudyDateUtils
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.CoroutineScope
@@ -73,11 +75,17 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     private val _upcomingExams = MutableStateFlow<List<ExamItem>>(emptyList())
     override val upcomingExams: StateFlow<List<ExamItem>> = _upcomingExams.asStateFlow()
 
+    private val _pastExams = MutableStateFlow<List<ExamItem>>(emptyList())
+    override val pastExams: StateFlow<List<ExamItem>> = _pastExams.asStateFlow()
+
+    private val _recentRevisions = MutableStateFlow<List<RevisionEvent>>(emptyList())
+    override val recentRevisions: StateFlow<List<RevisionEvent>> = _recentRevisions.asStateFlow()
+
     private val _priorityStudyItems = MutableStateFlow<List<StudyItem>>(emptyList())
     override val priorityStudyItems: StateFlow<List<StudyItem>> = _priorityStudyItems.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+    override val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     override val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -90,6 +98,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     private var allQuestions: List<QuestionDto> = emptyList()
     private var allNotes: List<NoteDto> = emptyList()
     private var allMaterials: List<StudyMaterialDto> = emptyList()
+    private var allExams: List<ExamDto> = emptyList()
+    private var allRevisionHistory: List<RevisionHistoryDto> = emptyList()
 
     private val displayDateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
 
@@ -110,13 +120,18 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         loadRequestToken++
         _subjects.value = emptyList()
         _upcomingExams.value = emptyList()
+        _pastExams.value = emptyList()
+        _recentRevisions.value = emptyList()
         _priorityStudyItems.value = emptyList()
         allUnits = emptyList()
         allTopics = emptyList()
         allQuestions = emptyList()
         allNotes = emptyList()
         allMaterials = emptyList()
+        allExams = emptyList()
+        allRevisionHistory = emptyList()
         _overallProgress.value = defaultProgress
+        _isLoading.value = false
         _errorMessage.value = null
     }
 
@@ -209,6 +224,21 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                 }
                 .decodeList()
 
+            if (requestToken != loadRequestToken || getUserId() != startingUserId) return@withContext
+            allExams = examDtos
+
+            // 6b. Fetch revision history (Phase 6 revision tracking)
+            val revisionDtos: List<RevisionHistoryDto> = try {
+                client.from("revision_history")
+                    .select {
+                        filter { eq("user_id", startingUserId) }
+                    }
+                    .decodeList()
+            } catch (e: Exception) {
+                Log.w(TAG, "Notice: revision_history table query exception (ensure 06_study_planning.sql is applied)", e)
+                emptyList()
+            }
+
             // 7. Fetch study materials (Phase 4 Storage Integration)
             val materialDtos: List<StudyMaterialDto> = try {
                 client.from("study_materials")
@@ -226,23 +256,28 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                 return@withContext
             }
             allMaterials = materialDtos
+            allRevisionHistory = revisionDtos
 
             // Construct Domain Subjects
-            val domainSubjects = assembleSubjects(subjectDtos, unitDtos, topicDtos, questionDtos, noteDtos, materialDtos)
+            val domainSubjects = assembleSubjects(
+                subjectDtos, unitDtos, topicDtos, questionDtos, noteDtos, materialDtos, revisionDtos
+            )
             _subjects.value = domainSubjects
 
-            // Construct Domain Exams
-            val domainExams = assembleExams(examDtos, subjectDtos)
-            _upcomingExams.value = domainExams
+            // Construct Domain Exams (upcoming + past) with real subject preparation
+            publishExams(assembleExamItems(examDtos, domainSubjects))
 
-            // Construct Priority Study Items
-            val domainPriorityItems = assemblePriorityStudyItems(topicDtos, unitDtos, subjectDtos)
-            _priorityStudyItems.value = domainPriorityItems
+            // Construct revision timeline + priority study items from real data
+            val revisionEvents = buildRevisionEvents(revisionDtos, domainSubjects)
+            _recentRevisions.value = StudyPlanning.recentRevisions(revisionEvents)
+            _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(
+                subjects = domainSubjects,
+                revisionEventsByTopic = revisionEvents.groupBy { it.topicId }
+            )
 
-            // Calculate overall progress
-            val totalTopics = topicDtos.size
-            val completedTopics = topicDtos.count { it.status.equals("COMPLETED", ignoreCase = true) }
-            val overallPct = if (totalTopics > 0) (completedTopics * 100) / totalTopics else 0
+            // Calculate overall progress from real topic data
+            val topicCounts = StudyPlanning.topicCounts(StudyPlanning.allTopics(domainSubjects))
+            val overallPct = StudyPlanning.subjectsPreparationPercent(domainSubjects)
 
             val activeSemester = subjectDtos.firstOrNull()?.semester?.let { formatSemesterLabel(it) }
                 ?: _overallProgress.value.semester
@@ -251,12 +286,16 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                 current.copy(
                     overallPercentage = overallPct,
                     subjectsCount = domainSubjects.size,
-                    upcomingExamsCount = domainExams.size,
-                    semester = activeSemester
+                    upcomingExamsCount = _upcomingExams.value.size,
+                    semester = activeSemester,
+                    totalTopics = topicCounts.total,
+                    completedTopics = topicCounts.completed,
+                    inProgressTopics = topicCounts.inProgress,
+                    topicsNeedingRevision = topicCounts.needsRevision
                 )
             }
 
-            Log.i(TAG, "Successfully loaded data from Supabase: ${domainSubjects.size} subjects, ${domainExams.size} exams.")
+            Log.i(TAG, "Successfully loaded data from Supabase: ${domainSubjects.size} subjects, ${_upcomingExams.value.size} upcoming exams, ${revisionEvents.size} revisions.")
         } catch (e: Exception) {
             if (requestToken == loadRequestToken && getUserId() == startingUserId) {
                 Log.e(TAG, "Error loading data from Supabase", e)
@@ -296,9 +335,11 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         topicDtos: List<TopicDto>,
         questionDtos: List<QuestionDto>,
         noteDtos: List<NoteDto>,
-        materialDtos: List<StudyMaterialDto> = emptyList()
+        materialDtos: List<StudyMaterialDto> = emptyList(),
+        revisionDtos: List<RevisionHistoryDto> = emptyList()
     ): List<Subject> {
         val domainMaterials = materialDtos.map { dtoToMaterialItem(it) }
+        val revisionsByTopic = revisionDtos.groupBy { it.topicId }
 
         return subjectDtos.map { sDto ->
             val sId = sDto.id ?: ""
@@ -350,6 +391,12 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                         materialsCount = materialsForTopic.size,
                         questionsCount = questionsForTopic.size,
                         notesCount = notesForTopic.size,
+                        completedAt = tDto.completedAt,
+                        revisionCount = maxOf(tDto.revisionCount, revisionsByTopic[tId]?.size ?: 0),
+                        lastRevisedAt = revisionsByTopic[tId]
+                            ?.mapNotNull { it.studiedAt ?: it.createdAt }
+                            ?.maxOrNull()
+                            ?: tDto.lastStudiedAt,
                         relatedMaterials = materialsForTopic,
                         questions = questionsForTopic.mapIndexed { idx, qDto ->
                             QuestionItem(
@@ -459,66 +506,65 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         }
     }
 
-    private fun assembleExams(
+    private fun assembleExamItems(
         examDtos: List<ExamDto>,
-        subjectDtos: List<SubjectDto>
+        subjects: List<Subject>
     ): List<ExamItem> {
-        val subjectMap = subjectDtos.associateBy { it.id }
+        val subjectMap = subjects.associateBy { it.id }
         return examDtos.map { eDto ->
             val subject = subjectMap[eDto.subjectId]
-            val subName = subject?.name ?: "Exam"
-            val icon = subject?.iconKey ?: "book"
-            val days = calculateDaysRemaining(eDto.examDate)
-
+            val isoDate = StudyDateUtils.isoDatePortion(eDto.examDate) ?: ""
             ExamItem(
                 id = eDto.id ?: "",
                 subjectId = eDto.subjectId,
-                subjectName = subName,
-                iconKey = icon,
+                subjectName = subject?.name ?: "Exam",
+                iconKey = subject?.iconKey ?: "book",
                 examDate = formatDisplayDate(eDto.examDate, eDto.examDate),
-                daysRemaining = days,
-                preparationPercent = 50,
-                code = subject?.description?.takeIf { it.isNotBlank() } ?: "EXAM",
-                venue = eDto.venue ?: "Main Hall"
+                daysRemaining = StudyDateUtils.daysFromToday(isoDate) ?: 0,
+                preparationPercent = subject?.preparationPercent ?: 0,
+                code = subject?.code ?: "EXAM",
+                venue = eDto.venue?.takeIf { it.isNotBlank() } ?: "Venue not set",
+                name = eDto.name,
+                description = eDto.description,
+                isoDate = isoDate
             )
         }
     }
 
-    private fun assemblePriorityStudyItems(
-        topicDtos: List<TopicDto>,
-        unitDtos: List<UnitDto>,
-        subjectDtos: List<SubjectDto>
-    ): List<StudyItem> {
-        val unitMap = unitDtos.associateBy { it.id }
-        val subjectMap = subjectDtos.associateBy { it.id }
+    private fun publishExams(exams: List<ExamItem>) {
+        _upcomingExams.value = exams.filter { it.daysRemaining >= 0 }.sortedBy { it.daysRemaining }
+        _pastExams.value = exams.filter { it.daysRemaining < 0 }.sortedByDescending { it.isoDate }
+    }
 
-        return topicDtos
-            .filter { !it.status.equals("COMPLETED", ignoreCase = true) }
-            .map { tDto ->
-                val unit = unitMap[tDto.unitId]
-                val subject = unit?.let { subjectMap[it.subjectId] }
-                val score = calculatePriorityScore(tDto)
-                val level = if (score >= 80) "High Priority" else "Medium Priority"
-                val note = when {
-                    score >= 90 -> "Revision due today"
-                    score >= 80 -> "Revision due tomorrow"
-                    tDto.status.equals("LEARNING", ignoreCase = true) -> "Learning in progress"
-                    else -> "Not completed"
-                }
+    private fun buildRevisionEvents(
+        revisionDtos: List<RevisionHistoryDto>,
+        subjects: List<Subject>
+    ): List<RevisionEvent> {
+        return revisionDtos.mapNotNull { dto ->
+            val subject = subjects.find { s -> s.units.any { u -> u.topics.any { t -> t.id == dto.topicId } } }
+                ?: return@mapNotNull null
+            val unit = subject.units.find { it.topics.any { t -> t.id == dto.topicId } }
+                ?: return@mapNotNull null
+            val topic = unit.topics.find { it.id == dto.topicId }
+                ?: return@mapNotNull null
 
-                StudyItem(
-                    topicId = tDto.id ?: "",
-                    subjectId = subject?.id ?: "",
-                    unitId = unit?.id ?: "",
-                    topicName = tDto.name,
-                    subjectName = subject?.name ?: "Subject",
-                    unitName = unit?.name ?: "Unit",
-                    priorityScore = score,
-                    priorityLevel = level,
-                    statusNote = note
-                )
-            }
-            .sortedByDescending { it.priorityScore }
+            val revisedAt = dto.studiedAt ?: dto.createdAt ?: ""
+            RevisionEvent(
+                id = dto.id ?: UUID.randomUUID().toString(),
+                topicId = dto.topicId,
+                subjectId = subject.id,
+                unitId = unit.id,
+                topicName = topic.title,
+                subjectName = subject.name,
+                unitName = unit.title,
+                revisionNumber = dto.revisionNumber,
+                previousStatus = dto.previousStatus?.let { parseTopicStatus(it) },
+                newStatus = parseTopicStatus(dto.newStatus),
+                revisedAt = revisedAt,
+                revisedAtDisplay = formatDisplayDate(revisedAt, "Recently"),
+                notes = dto.notes
+            )
+        }
     }
 
     // --- StudyVaultRepository Interface Implementation ---
@@ -554,62 +600,28 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         return null
     }
 
-    override fun updateTopicStatus(topicId: String, status: TopicStatus) {
-        val client = SupabaseClientProvider.client
-        val userId = getUserId()
-        if (client == null || userId == null) {
-            val err = if (client == null) {
-                "Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence."
-            } else {
-                "Cannot update topic status: User is not authenticated."
-            }
-            Log.e(TAG, err)
-            _errorMessage.value = err
-            return
-        }
+    override suspend fun updateTopicStatus(topicId: String, status: TopicStatus): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val client = SupabaseClientProvider.client
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+                )
+            val userId = getUserId()
+                ?: return@withContext Result.failure(IllegalStateException("Cannot update topic status: User is not authenticated."))
 
-        val previousTopic = getTopicById(topicId)
-        val prevStatus = previousTopic?.status ?: TopicStatus.NOT_STARTED
+            getTopicById(topicId)
+                ?: return@withContext Result.failure(NoSuchElementException("Topic not found."))
 
-        scope.launch {
             topicMutex.withLock {
+                val nowStr = StudyDateUtils.nowIsoTimestamp()
+                val statusStr = status.name
+                val completedAt = if (status == TopicStatus.COMPLETED) nowStr else null
                 try {
-                    // Fetch latest revision history and topic record from Supabase directly to prevent stale cache or race conditions
-                    val historyList: List<RevisionHistoryDto> = client.from("revision_history")
-                        .select {
-                            filter {
-                                eq("topic_id", topicId)
-                                eq("user_id", userId)
-                            }
-                        }
-                        .decodeList()
-
-                    val maxHistRev = historyList.maxOfOrNull { it.revisionNumber } ?: 0
-
-                    val topicDto: TopicDto? = client.from("topics")
-                        .select {
-                            filter {
-                                eq("id", topicId)
-                                eq("user_id", userId)
-                            }
-                        }
-                        .decodeSingleOrNull()
-
-                    val currentRev = maxOf(maxHistRev, topicDto?.revisionCount ?: 0)
-                    val nextRevisionNumber = currentRev + 1
-
-                    val nowStr = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                        timeZone = TimeZone.getTimeZone("UTC")
-                    }.format(Date())
-
-                    val statusStr = status.name
-
-                    // 1. Update topic in database
                     client.from("topics").update(
                         {
                             set("status", statusStr)
                             set("last_studied_at", nowStr)
-                            set("revision_count", nextRevisionNumber)
+                            set("completed_at", completedAt)
                             set("updated_at", nowStr)
                         }
                     ) {
@@ -619,85 +631,217 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                         }
                     }
 
-                    // 2. Insert revision history record
-                    val revHistory = RevisionHistoryDto(
+                    if (getUserId() != userId) {
+                        return@withLock Result.failure(StaleRequestException("Topic update discarded: session changed."))
+                    }
+
+                    allTopics = allTopics.map {
+                        if (it.id == topicId) it.copy(status = statusStr, lastStudiedAt = nowStr, completedAt = completedAt) else it
+                    }
+                    applyLocalTopicState(topicId, status, nowStr, completedAt)
+                    _errorMessage.value = null
+                    Log.i(TAG, "Successfully updated topic $topicId status to $status")
+                    Result.success(Unit)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to persist topic status update to Supabase", e)
+                    _errorMessage.value = "Failed to update topic: ${e.message}"
+                    Result.failure(e)
+                }
+            }
+        }
+
+    override suspend fun markTopicRevised(topicId: String, notes: String?): Result<RevisionEvent> =
+        withContext(Dispatchers.IO) {
+            val client = SupabaseClientProvider.client
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+                )
+            val userId = getUserId()
+                ?: return@withContext Result.failure(IllegalStateException("Cannot record revision: User is not authenticated."))
+
+            val existing = getTopicById(topicId)
+                ?: return@withContext Result.failure(NoSuchElementException("Topic not found."))
+            val subject = getSubjectById(existing.subjectId)
+            val unit = subject?.units?.find { it.id == existing.unitId }
+
+            topicMutex.withLock {
+                val nowStr = StudyDateUtils.nowIsoTimestamp()
+                val nextStatus = if (existing.status == TopicStatus.NEEDS_REVISION) TopicStatus.COMPLETED else existing.status
+                val existingCompletedAt = existing.completedAt
+                val newCompletedAt = if (nextStatus == TopicStatus.COMPLETED) (existingCompletedAt ?: nowStr) else null
+                val trimmedNotes = notes?.trim()?.takeIf { it.isNotEmpty() }
+                try {
+                    val historyList: List<RevisionHistoryDto> = client.from("revision_history")
+                        .select {
+                            filter {
+                                eq("topic_id", topicId)
+                                eq("user_id", userId)
+                            }
+                        }
+                        .decodeList()
+
+                    val nextRevisionNumber = (historyList.maxOfOrNull { it.revisionNumber } ?: 0) + 1
+
+                    val dto = RevisionHistoryDto(
                         id = UUID.randomUUID().toString(),
                         userId = userId,
                         topicId = topicId,
                         studiedAt = nowStr,
                         revisionNumber = nextRevisionNumber,
-                        previousStatus = prevStatus.name,
-                        newStatus = statusStr,
+                        previousStatus = existing.status.name,
+                        newStatus = nextStatus.name,
+                        notes = trimmedNotes,
                         createdAt = nowStr
                     )
-                    client.from("revision_history").insert(revHistory)
+                    client.from("revision_history").insert(dto)
 
-                    // 3. Only update local memory and StateFlow after BOTH database operations succeed
-                    allTopics = allTopics.map {
-                        if (it.id == topicId) it.copy(
-                            status = statusStr,
-                            revisionCount = nextRevisionNumber,
-                            lastStudiedAt = nowStr
-                        ) else it
+                    client.from("topics").update(
+                        {
+                            set("revision_count", nextRevisionNumber)
+                            set("status", nextStatus.name)
+                            set("last_studied_at", nowStr)
+                            set("completed_at", newCompletedAt)
+                            set("updated_at", nowStr)
+                        }
+                    ) {
+                        filter {
+                            eq("id", topicId)
+                            eq("user_id", userId)
+                        }
                     }
 
-                    applyLocalTopicStatusUpdate(topicId, status, nextRevisionNumber, nowStr)
+                    if (getUserId() != userId) {
+                        return@withLock Result.failure(StaleRequestException("Revision discarded: session changed."))
+                    }
+
+                    allRevisionHistory = allRevisionHistory + dto
+                    allTopics = allTopics.map {
+                        if (it.id == topicId) {
+                            it.copy(
+                                status = nextStatus.name,
+                                revisionCount = nextRevisionNumber,
+                                lastStudiedAt = nowStr,
+                                completedAt = newCompletedAt
+                            )
+                        } else it
+                    }
+
+                    val event = RevisionEvent(
+                        id = dto.id ?: UUID.randomUUID().toString(),
+                        topicId = topicId,
+                        subjectId = existing.subjectId,
+                        unitId = existing.unitId,
+                        topicName = existing.title,
+                        subjectName = subject?.name ?: "",
+                        unitName = unit?.title ?: "",
+                        revisionNumber = nextRevisionNumber,
+                        previousStatus = existing.status,
+                        newStatus = nextStatus,
+                        revisedAt = nowStr,
+                        revisedAtDisplay = StudyDateUtils.toDisplayDate(nowStr),
+                        notes = trimmedNotes
+                    )
+
+                    applyLocalTopicState(
+                        topicId = topicId,
+                        status = nextStatus,
+                        lastStudiedIso = nowStr,
+                        completedAt = newCompletedAt,
+                        revisionCount = nextRevisionNumber,
+                        lastRevisedIso = nowStr
+                    )
+                    rebuildRevisionSummaries()
                     _errorMessage.value = null
-                    Log.i(TAG, "Successfully updated topic $topicId status to $status (revision #$nextRevisionNumber)")
+                    Log.i(TAG, "Recorded revision #$nextRevisionNumber for topic $topicId")
+                    Result.success(event)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to persist topic status update to Supabase", e)
-                    _errorMessage.value = "Failed to update topic: ${e.message}"
-                    // Sync local state with actual database state to avoid inconsistent display
-                    loadAllData()
+                    Log.e(TAG, "Failed to record revision for topic $topicId", e)
+                    _errorMessage.value = "Failed to record revision: ${e.message}"
+                    Result.failure(e)
                 }
             }
         }
+
+    override fun getRevisionEventsForTopic(topicId: String): List<RevisionEvent> {
+        val subjects = _subjects.value
+        return StudyPlanning.sortRevisionEventsNewestFirst(
+            allRevisionHistory
+                .filter { it.topicId == topicId }
+                .mapNotNull { dto -> buildRevisionEvents(listOf(dto), subjects).firstOrNull() }
+        )
     }
 
-    private fun applyLocalTopicStatusUpdate(
+    private fun applyLocalTopicState(
         topicId: String,
         status: TopicStatus,
-        revisionCount: Int,
-        lastStudiedIso: String
+        lastStudiedIso: String,
+        completedAt: String?,
+        revisionCount: Int? = null,
+        lastRevisedIso: String? = null
     ) {
         val displayDate = formatDisplayDate(lastStudiedIso, "Just now")
         _subjects.update { currentSubjects ->
             currentSubjects.map { subject ->
-                subject.copy(
-                    units = subject.units.map { unit ->
-                        val updatedTopics = unit.topics.map { topic ->
-                            if (topic.id == topicId) {
-                                topic.copy(
-                                    status = status,
-                                    lastStudiedDate = displayDate
-                                )
-                            } else topic
-                        }
-                        val completedInUnit = updatedTopics.count { it.status == TopicStatus.COMPLETED }
-                        val unitPrepPct = if (updatedTopics.isNotEmpty()) (completedInUnit * 100) / updatedTopics.size else 0
-                        unit.copy(topics = updatedTopics, preparationPercent = unitPrepPct)
+                val updatedUnits = subject.units.map { unit ->
+                    val updatedTopics = unit.topics.map { topic ->
+                        if (topic.id == topicId) {
+                            topic.copy(
+                                status = status,
+                                lastStudiedDate = displayDate,
+                                completedAt = completedAt,
+                                revisionCount = revisionCount ?: topic.revisionCount,
+                                lastRevisedAt = lastRevisedIso ?: topic.lastRevisedAt
+                            )
+                        } else topic
                     }
-                )
-            }
-        }
-
-        // Recalculate priority items
-        _priorityStudyItems.update { items ->
-            if (status == TopicStatus.COMPLETED) {
-                items.filter { it.topicId != topicId }
-            } else {
-                items.map {
-                    if (it.topicId == topicId) it.copy(statusNote = "Learning in progress") else it
+                    val unitPercent = if (updatedTopics.isEmpty()) unit.preparationPercent else StudyPlanning.preparationPercent(updatedTopics)
+                    unit.copy(topics = updatedTopics, preparationPercent = unitPercent)
+                }
+                val trackedTopics = updatedUnits.flatMap { it.topics }
+                if (trackedTopics.isEmpty()) {
+                    subject.copy(units = updatedUnits)
+                } else {
+                    subject.copy(
+                        units = updatedUnits,
+                        preparationPercent = StudyPlanning.preparationPercent(trackedTopics)
+                    )
                 }
             }
         }
 
-        // Recalculate overall progress
-        val allCurrentTopics = _subjects.value.flatMap { it.units }.flatMap { it.topics }
-        val totalTopics = allCurrentTopics.size
-        val completedTopics = allCurrentTopics.count { it.status == TopicStatus.COMPLETED }
-        val overallPct = if (totalTopics > 0) (completedTopics * 100) / totalTopics else 0
-        _overallProgress.update { it.copy(overallPercentage = overallPct) }
+        _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(
+            subjects = _subjects.value,
+            revisionEventsByTopic = currentRevisionEvents().groupBy { it.topicId }
+        )
+        recalculateOverallProgress()
+    }
+
+    private fun currentRevisionEvents(): List<RevisionEvent> =
+        buildRevisionEvents(allRevisionHistory, _subjects.value)
+
+    private fun rebuildRevisionSummaries() {
+        val events = currentRevisionEvents()
+        _recentRevisions.value = StudyPlanning.recentRevisions(events)
+        _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(
+            subjects = _subjects.value,
+            revisionEventsByTopic = events.groupBy { it.topicId }
+        )
+    }
+
+    private fun recalculateOverallProgress() {
+        val subjects = _subjects.value
+        val counts = StudyPlanning.topicCounts(StudyPlanning.allTopics(subjects))
+        _overallProgress.update {
+            it.copy(
+                overallPercentage = StudyPlanning.subjectsPreparationPercent(subjects),
+                subjectsCount = subjects.size,
+                upcomingExamsCount = _upcomingExams.value.size,
+                totalTopics = counts.total,
+                completedTopics = counts.completed,
+                inProgressTopics = counts.inProgress,
+                topicsNeedingRevision = counts.needsRevision
+            )
+        }
     }
 
     override fun addSubject(subjectName: String, code: String, iconKey: String) {
@@ -769,92 +913,191 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         }
     }
 
-    override fun addExam(subjectName: String, date: String, daysRemaining: Int) {
+    override fun getExamById(examId: String): ExamItem? =
+        (_upcomingExams.value + _pastExams.value).find { it.id == examId }
+
+    override suspend fun createExam(
+        subjectId: String,
+        name: String,
+        examDate: String,
+        venue: String,
+        description: String?
+    ): Result<ExamItem> = withContext(Dispatchers.IO) {
         val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
         val userId = getUserId()
-        if (client == null || userId == null) {
-            val err = if (client == null) {
-                "Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence."
-            } else {
-                "Cannot schedule exam: User is not authenticated."
-            }
-            Log.e(TAG, err)
-            _errorMessage.value = err
-            return
-        }
+            ?: return@withContext Result.failure(IllegalStateException("Cannot schedule exam: User is not authenticated."))
 
-        // Validate exam date strictly before any optimistic update or insert
-        val isoTimestamp = convertToIso8601Timestamp(date)
-        if (isoTimestamp == null) {
-            val err = "Invalid exam date '$date'. Please enter a valid date (e.g. 'Nov 15, 2026' or '2026-11-15')."
-            Log.e(TAG, err)
-            _errorMessage.value = err
-            return
-        }
-
-        // Match subject strictly; never create an invalid or random UUID when no subject exists
-        val trimmedName = subjectName.trim()
         val matchedSubject = _subjects.value.find {
-            it.name.equals(trimmedName, ignoreCase = true) ||
-            it.code.equals(trimmedName, ignoreCase = true) ||
-            it.id == trimmedName
-        }
-
-        if (matchedSubject == null) {
-            val err = "Subject '$trimmedName' not found. Please create the subject before scheduling an exam."
-            Log.e(TAG, err)
-            _errorMessage.value = err
-            return
-        }
-
-        val subjectId = matchedSubject.id
-        val newId = UUID.randomUUID().toString()
-        val formattedDate = formatDisplayDate(isoTimestamp, date)
-        val calculatedDays = calculateDaysRemaining(isoTimestamp)
-
-        val newExam = ExamItem(
-            id = newId,
-            subjectId = subjectId,
-            subjectName = matchedSubject.name,
-            iconKey = matchedSubject.iconKey,
-            examDate = formattedDate,
-            daysRemaining = calculatedDays,
-            preparationPercent = 0,
-            code = matchedSubject.code,
-            venue = "Main Hall"
+            it.id == subjectId ||
+                it.name.equals(subjectId, ignoreCase = true) ||
+                it.code.equals(subjectId, ignoreCase = true)
+        } ?: return@withContext Result.failure(
+            IllegalArgumentException("Subject '$subjectId' not found. Please create the subject before scheduling an exam.")
         )
 
-        // Optimistically update
-        _upcomingExams.update { it + newExam }
-        _overallProgress.update { it.copy(upcomingExamsCount = it.upcomingExamsCount + 1) }
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Exam name cannot be blank."))
+        }
 
-        scope.launch {
-            try {
-                val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }.format(Date())
+        val isoDate = StudyDateUtils.parseExamDateToIso(examDate)
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("Invalid exam date '$examDate'. Use a format like 'Nov 15, 2026' or '2026-11-15'.")
+            )
 
-                val dto = ExamDto(
-                    id = newId,
-                    userId = userId,
-                    subjectId = subjectId,
-                    name = matchedSubject.name,
-                    examDate = isoTimestamp, // Valid ISO-8601 format for PostgreSQL timestamp column
-                    venue = "Main Hall",
-                    description = "${matchedSubject.name} Exam",
-                    createdAt = now,
-                    updatedAt = now
-                )
-                client.from("exams").insert(dto)
-                _errorMessage.value = null
-                Log.i(TAG, "Successfully inserted exam ${matchedSubject.name} ($isoTimestamp) to Supabase.")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to insert exam to Supabase", e)
-                // Revert optimistic update to prevent phantom records
-                _upcomingExams.update { currentList -> currentList.filter { it.id != newId } }
-                _overallProgress.update { it.copy(upcomingExamsCount = (it.upcomingExamsCount - 1).coerceAtLeast(0)) }
-                _errorMessage.value = "Failed to save exam: ${e.message}"
+        val newId = UUID.randomUUID().toString()
+        val nowStr = StudyDateUtils.nowIsoTimestamp()
+        val trimmedVenue = venue.trim()
+        try {
+            val dto = ExamDto(
+                id = newId,
+                userId = userId,
+                subjectId = matchedSubject.id,
+                name = trimmedName,
+                examDate = isoDate,
+                venue = trimmedVenue.ifBlank { null },
+                description = description?.trim()?.takeIf { it.isNotEmpty() },
+                createdAt = nowStr,
+                updatedAt = nowStr
+            )
+            client.from("exams").insert(dto)
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Exam creation discarded: session changed."))
             }
+
+            allExams = allExams + dto
+            publishExams(assembleExamItems(allExams, _subjects.value))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully inserted exam '$trimmedName' ($isoDate) to Supabase.")
+            getExamById(newId)?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("Exam was saved but could not be read back."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to insert exam to Supabase", e)
+            _errorMessage.value = "Failed to save exam: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun updateExam(
+        examId: String,
+        subjectId: String,
+        name: String,
+        examDate: String,
+        venue: String,
+        description: String?
+    ): Result<ExamItem> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot update exam: User is not authenticated."))
+
+        allExams.find { it.id == examId }
+            ?: return@withContext Result.failure(NoSuchElementException("Exam not found."))
+
+        val matchedSubject = _subjects.value.find {
+            it.id == subjectId ||
+                it.name.equals(subjectId, ignoreCase = true) ||
+                it.code.equals(subjectId, ignoreCase = true)
+        } ?: return@withContext Result.failure(IllegalArgumentException("Subject '$subjectId' not found."))
+
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Exam name cannot be blank."))
+        }
+
+        val isoDate = StudyDateUtils.parseExamDateToIso(examDate)
+            ?: return@withContext Result.failure(
+                IllegalArgumentException("Invalid exam date '$examDate'. Use a format like 'Nov 15, 2026' or '2026-11-15'.")
+            )
+
+        val nowStr = StudyDateUtils.nowIsoTimestamp()
+        val trimmedVenue = venue.trim()
+        try {
+            client.from("exams").update(
+                {
+                    set("subject_id", matchedSubject.id)
+                    set("name", trimmedName)
+                    set("exam_date", isoDate)
+                    set("venue", trimmedVenue.ifBlank { null })
+                    set("description", description?.trim()?.takeIf { it.isNotEmpty() })
+                    set("updated_at", nowStr)
+                }
+            ) {
+                filter {
+                    eq("id", examId)
+                    eq("user_id", userId)
+                }
+            }
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Exam update discarded: session changed."))
+            }
+
+            allExams = allExams.map {
+                if (it.id == examId) {
+                    it.copy(
+                        subjectId = matchedSubject.id,
+                        name = trimmedName,
+                        examDate = isoDate,
+                        venue = trimmedVenue.ifBlank { null },
+                        description = description?.trim()?.takeIf { v -> v.isNotEmpty() },
+                        updatedAt = nowStr
+                    )
+                } else it
+            }
+            publishExams(assembleExamItems(allExams, _subjects.value))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully updated exam $examId")
+            getExamById(examId)?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("Exam was updated but could not be read back."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update exam $examId", e)
+            _errorMessage.value = "Failed to update exam: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun deleteExam(examId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot delete exam: User is not authenticated."))
+
+        allExams.find { it.id == examId }
+            ?: return@withContext Result.failure(NoSuchElementException("Exam not found."))
+
+        try {
+            client.from("exams").delete {
+                filter {
+                    eq("id", examId)
+                    eq("user_id", userId)
+                }
+            }
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Exam deletion discarded: session changed."))
+            }
+
+            allExams = allExams.filter { it.id != examId }
+            publishExams(assembleExamItems(allExams, _subjects.value))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully deleted exam $examId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete exam $examId", e)
+            _errorMessage.value = "Failed to delete exam: ${e.message}"
+            Result.failure(e)
         }
     }
 
@@ -1021,7 +1264,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1107,7 +1351,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1151,7 +1396,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1297,7 +1543,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1379,7 +1626,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1423,7 +1671,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     topicDtos = allTopics,
                     questionDtos = allQuestions,
                     noteDtos = allNotes,
-                    materialDtos = allMaterials
+                    materialDtos = allMaterials,
+                    revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
 
@@ -1437,64 +1686,6 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     }
 
     // --- Helper Methods ---
-
-    private fun convertToIso8601Timestamp(dateStr: String): String? {
-        val trimmed = dateStr.trim()
-        if (trimmed.isBlank()) return null
-
-        val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-            isLenient = false
-        }
-
-        if (trimmed.contains("T")) {
-            val isoCandidatePatterns = listOf(
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                "yyyy-MM-dd'T'HH:mm:ssXXX",
-                "yyyy-MM-dd'T'HH:mm:ss"
-            )
-            for (pattern in isoCandidatePatterns) {
-                try {
-                    val parser = SimpleDateFormat(pattern, Locale.US).apply {
-                        timeZone = TimeZone.getTimeZone("UTC")
-                        isLenient = false
-                    }
-                    val parsed = parser.parse(trimmed)
-                    if (parsed != null) {
-                        return isoFormat.format(parsed)
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-
-        val candidatePatterns = listOf(
-            "MMM d, yyyy",
-            "MMM dd, yyyy",
-            "MMMM d, yyyy",
-            "MMMM dd, yyyy",
-            "yyyy-MM-dd",
-            "yyyy/MM/dd",
-            "dd-MM-yyyy",
-            "dd/MM/yyyy",
-            "MM/dd/yyyy",
-            "d MMM yyyy",
-            "dd MMM yyyy"
-        )
-
-        for (pattern in candidatePatterns) {
-            try {
-                val parser = SimpleDateFormat(pattern, Locale.US).apply {
-                    isLenient = false
-                }
-                val parsed = parser.parse(trimmed)
-                if (parsed != null) {
-                    return isoFormat.format(parsed)
-                }
-            } catch (_: Exception) {}
-        }
-
-        return null
-    }
 
     private fun parseTopicStatus(str: String): TopicStatus {
         return when (str.uppercase().replace(" ", "_").replace("-", "_")) {
@@ -1536,26 +1727,6 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             score += 5
         }
         return score.coerceIn(0, 100)
-    }
-
-    private fun calculateDaysRemaining(dateStr: String): Int {
-        val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-        }
-        val dateOnlyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val displayFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
-
-        return try {
-            val target = when {
-                dateStr.contains("T") -> isoFormat.parse(dateStr.substringBefore("Z").substringBefore("."))
-                dateStr.contains("-") -> dateOnlyFormat.parse(dateStr)
-                else -> displayFormat.parse(dateStr)
-            } ?: return 30
-            val diff = target.time - System.currentTimeMillis()
-            (diff / (1000 * 60 * 60 * 24)).toInt().coerceAtLeast(0)
-        } catch (_: Exception) {
-            30
-        }
     }
 
     private fun formatDisplayDate(dateStr: String?, defaultVal: String): String {

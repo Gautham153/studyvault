@@ -59,6 +59,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -67,7 +69,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.MaterialItem
 import com.example.data.model.NoteItem
 import com.example.data.model.QuestionItem
+import com.example.data.model.RevisionEvent
 import com.example.data.model.TopicStatus
+import com.example.data.model.displayLabel
+import com.example.util.StudyDateUtils
 import com.example.ui.components.CardWithSubtleBorder
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusBadge
@@ -105,8 +110,13 @@ fun TopicDetailScreen(
     val questions by viewModel.questions.collectAsState()
     val isUploading by viewModel.isUploading.collectAsState()
     val uploadProgress by viewModel.uploadProgress.collectAsState()
+    val isUpdatingStatus by viewModel.isUpdatingStatus.collectAsState()
+    val isMarkingRevised by viewModel.isMarkingRevised.collectAsState()
+    val revisionEvents by viewModel.revisionEvents.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
+
+    var statusMenuExpanded by remember { mutableStateOf(false) }
 
     var showAddNoteDialog by remember { mutableStateOf(false) }
     var noteToEdit by remember { mutableStateOf<NoteItem?>(null) }
@@ -209,22 +219,47 @@ fun TopicDetailScreen(
                                 fontWeight = FontWeight.Bold
                             )
 
-                            // Clickable status badge to cycle status
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        val nextStatus = when (currentTopic.status) {
-                                            TopicStatus.COMPLETED -> TopicStatus.NEEDS_REVISION
-                                            TopicStatus.NEEDS_REVISION -> TopicStatus.LEARNING
-                                            TopicStatus.LEARNING -> TopicStatus.NOT_STARTED
-                                            TopicStatus.NOT_STARTED -> TopicStatus.COMPLETED
-                                        }
-                                        viewModel.updateStatus(nextStatus)
+                            // Status selector: opens a menu of the four preparation states
+                            Box {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(enabled = !isUpdatingStatus) { statusMenuExpanded = true }
+                                        .testTag("status_selector"),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    StatusBadge(status = currentTopic.status)
+                                    if (isUpdatingStatus) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            color = PrimaryBlueLight,
+                                            strokeWidth = 2.dp
+                                        )
                                     }
-                                    .testTag("status_toggle_badge")
-                            ) {
-                                StatusBadge(status = currentTopic.status)
+                                }
+                                DropdownMenu(
+                                    expanded = statusMenuExpanded,
+                                    onDismissRequest = { statusMenuExpanded = false },
+                                    modifier = Modifier.background(SurfaceDark)
+                                ) {
+                                    TopicStatus.entries.forEach { option ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = option.displayLabel,
+                                                    color = if (option == currentTopic.status) PrimaryBlueLight else TextPrimary,
+                                                    fontWeight = if (option == currentTopic.status) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            onClick = {
+                                                statusMenuExpanded = false
+                                                viewModel.updateStatus(option)
+                                            },
+                                            modifier = Modifier.testTag("status_option_${option.name.lowercase()}")
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -272,6 +307,80 @@ fun TopicDetailScreen(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+                    }
+                }
+
+                // Revision tracking: revision count, last revised date, and Mark as Revised action
+                item {
+                    CardWithSubtleBorder(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("revision_tracking_card"),
+                        backgroundColor = SurfaceDark
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${currentTopic.revisionCount} revision${if (currentTopic.revisionCount == 1) "" else "s"}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = currentTopic.lastRevisedAt?.let {
+                                            "Last revised ${StudyDateUtils.toDisplayDate(it)}"
+                                        } ?: "Never revised",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                                Button(
+                                    onClick = { viewModel.markRevised() },
+                                    enabled = !isMarkingRevised && !isUpdatingStatus,
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.testTag("mark_revised_button")
+                                ) {
+                                    if (isMarkingRevised) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = Color.White,
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.EventRepeat,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = Color.White
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Mark as Revised", color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Revision History
+                if (revisionEvents.isNotEmpty()) {
+                    item {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        SectionHeader(title = "Revision History (${revisionEvents.size})")
+                    }
+                    items(revisionEvents, key = { it.id }) { event ->
+                        RevisionHistoryRow(event = event)
                     }
                 }
 
@@ -906,6 +1015,64 @@ private fun MetadataTile(
                     color = TextPrimary,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RevisionHistoryRow(event: RevisionEvent) {
+    CardWithSubtleBorder(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("revision_history_row_${event.id}"),
+        backgroundColor = SurfaceDark
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceElevated),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "#${event.revisionNumber}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PrimaryBlueLight,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = event.revisedAtDisplay.ifBlank { StudyDateUtils.toDisplayDate(event.revisedAt) },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "${event.previousStatus?.displayLabel ?: "Not Started"} → ${event.newStatus.displayLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+                if (!event.notes.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = event.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
     }
