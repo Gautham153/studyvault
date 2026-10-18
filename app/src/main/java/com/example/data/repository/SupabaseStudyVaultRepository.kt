@@ -227,16 +227,24 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             if (requestToken != loadRequestToken || getUserId() != startingUserId) return@withContext
             allExams = examDtos
 
-            // 6b. Fetch revision history (Phase 6 revision tracking)
-            val revisionDtos: List<RevisionHistoryDto> = try {
+            // 6b. Fetch revision history (Phase 6 revision tracking).
+            // A failed query (e.g. 06_study_planning.sql not applied) is surfaced as an error and
+            // is NOT treated as a confirmed empty history; a successful empty list means the user
+            // genuinely has no revisions yet.
+            val revisionLoad = RevisionHistoryLoader.load {
                 client.from("revision_history")
                     .select {
                         filter { eq("user_id", startingUserId) }
                     }
                     .decodeList()
-            } catch (e: Exception) {
-                Log.w(TAG, "Notice: revision_history table query exception (ensure 06_study_planning.sql is applied)", e)
-                emptyList()
+            }
+            val revisionDtos: List<RevisionHistoryDto> = revisionLoad.getOrElse { emptyList() }
+            if (revisionLoad.isFailure) {
+                Log.w(
+                    TAG,
+                    "revision_history load failed (ensure 06_study_planning.sql is applied): " +
+                        (revisionLoad.exceptionOrNull()?.message ?: "unknown error")
+                )
             }
 
             // 7. Fetch study materials (Phase 4 Storage Integration)
@@ -293,6 +301,15 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     inProgressTopics = topicCounts.inProgress,
                     topicsNeedingRevision = topicCounts.needsRevision
                 )
+            }
+
+            // A revision-history failure degrades only the revision sections. The rest of the
+            // dashboard (subjects, topics, exams, progress) stays available, and the failure is
+            // surfaced as a distinct, non-fatal error state rather than a silent empty history.
+            if (revisionLoad.isFailure) {
+                _errorMessage.value = "Revision history could not be loaded: " +
+                    "${revisionLoad.exceptionOrNull()?.message ?: "unknown error"}. " +
+                    "Other study data is unaffected."
             }
 
             Log.i(TAG, "Successfully loaded data from Supabase: ${domainSubjects.size} subjects, ${_upcomingExams.value.size} upcoming exams, ${revisionEvents.size} revisions.")
@@ -532,8 +549,9 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     }
 
     private fun publishExams(exams: List<ExamItem>) {
-        _upcomingExams.value = exams.filter { it.daysRemaining >= 0 }.sortedBy { it.daysRemaining }
-        _pastExams.value = exams.filter { it.daysRemaining < 0 }.sortedByDescending { it.isoDate }
+        val schedule = StudyPlanning.classifyExams(exams)
+        _upcomingExams.value = schedule.upcoming
+        _pastExams.value = schedule.past
     }
 
     private fun buildRevisionEvents(

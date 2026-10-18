@@ -1,5 +1,6 @@
 package com.example.data.repository
 
+import com.example.data.model.ExamItem
 import com.example.data.model.RevisionEvent
 import com.example.data.model.StudyItem
 import com.example.data.model.Subject
@@ -16,6 +17,12 @@ data class TopicCounts(
     val inProgress: Int = 0,
     val notStarted: Int = 0,
     val needsRevision: Int = 0
+)
+
+/** Exams split by date relative to today, preserving each section's display order. */
+data class ExamSchedule(
+    val upcoming: List<ExamItem> = emptyList(),
+    val past: List<ExamItem> = emptyList()
 )
 
 /**
@@ -130,6 +137,15 @@ object StudyPlanning {
 
     fun recentRevisions(events: List<RevisionEvent>, limit: Int = RECENT_REVISION_LIMIT): List<RevisionEvent> =
         sortRevisionEventsNewestFirst(events).take(limit)
+
+    /**
+     * Splits exams by [ExamItem.daysRemaining] (signed: 0 = today): upcoming exams are today or
+     * later, ordered soonest first; past exams are strictly before today, most recent first.
+     */
+    fun classifyExams(exams: List<ExamItem>): ExamSchedule = ExamSchedule(
+        upcoming = exams.filter { it.daysRemaining >= 0 }.sortedBy { it.daysRemaining },
+        past = exams.filter { it.daysRemaining < 0 }.sortedByDescending { it.isoDate }
+    )
 
     private fun List<RevisionEvent>.lastRevisionIso(): String? =
         maxOfOrNull { it.revisedAt } ?: firstOrNull()?.revisedAt

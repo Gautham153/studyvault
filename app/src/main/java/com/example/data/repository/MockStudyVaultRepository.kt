@@ -622,12 +622,9 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
                 daysRemaining = StudyDateUtils.daysFromToday(iso) ?: exam.daysRemaining
             )
         }
-        _upcomingExams.value = derived
-            .filter { it.daysRemaining >= 0 }
-            .sortedBy { it.daysRemaining }
-        _pastExams.value = derived
-            .filter { it.daysRemaining < 0 }
-            .sortedByDescending { it.isoDate }
+        val schedule = StudyPlanning.classifyExams(derived)
+        _upcomingExams.value = schedule.upcoming
+        _pastExams.value = schedule.past
     }
 
     override fun addSubject(subjectName: String, code: String, iconKey: String) {
