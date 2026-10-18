@@ -15,17 +15,20 @@ import com.example.data.repository.StudyPriorityEngine
 import com.example.data.repository.StudyRecommendation
 import com.example.data.repository.TodayPlanConfig
 import com.example.data.repository.TopicStudySnapshot
+import com.example.ui.screens.study.StudyFilter
 import com.example.ui.screens.study.StudyViewModel
 import com.example.util.StudyDateUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -330,10 +333,45 @@ class Phase7StudyPriorityTest {
 
         val items = viewModel.studyItems.value
         assertTrue(items.isNotEmpty())
-        assertTrue("Priority tab never lists completed topics", items.none { it.topicStatus == TopicStatus.COMPLETED })
 
-        val engineScores = repository.studyRecommendations.value.associate { it.topicId to it.score }
-        items.forEach { item -> assertEquals(engineScores[item.topicId], item.priorityScore) }
+        val engineById = repository.studyRecommendations.value.associateBy { it.topicId }
+        items.forEach { item ->
+            val engine = engineById.getValue(item.topicId)
+            assertEquals(engine.score, item.priorityScore)
+            assertFalse(
+                "Completed topics only appear when the engine flags them for revision",
+                engine.status == TopicStatus.COMPLETED && engine.action != StudyAction.REVISE
+            )
+        }
+
+        subscription.cancel()
+    }
+
+    /**
+     * Regression: the Priority filter must keep completed topics the engine recommends revising,
+     * while still hiding completed topics that have no revision need.
+     */
+    @Test
+    fun `priority filter keeps completed topics flagged for revision and hides the rest`() {
+        val repository = MockStudyVaultRepository.createIsolated()
+        val viewModel = StudyViewModel(repository)
+        val subscription = CoroutineScope(Dispatchers.Main).launch { viewModel.studyItems.collect {} }
+
+        // Freshly revised completed topic -> no revision need -> hidden.
+        runBlocking { repository.markTopicRevised("t_java_u2_1") }
+
+        val completedNeedingRevision = "t_java_u2_7" // completed, never revised -> REVISE
+        val completedNoRevisionNeed = "t_java_u2_1"  // just revised -> CONTINUE
+        val notStarted = "t_java_u2_5"
+        val inProgress = "t_java_u2_3"
+
+        viewModel.setFilter(StudyFilter.PRIORITY)
+        val priorityIds = viewModel.studyItems.value.map { it.topicId }
+
+        assertTrue("Completed topic flagged for revision must remain visible", completedNeedingRevision in priorityIds)
+        assertFalse("Completed topic with no revision need must stay hidden", completedNoRevisionNeed in priorityIds)
+        assertTrue("Not-started priority item must appear", notStarted in priorityIds)
+        assertTrue("In-progress priority item must appear", inProgress in priorityIds)
 
         subscription.cancel()
     }

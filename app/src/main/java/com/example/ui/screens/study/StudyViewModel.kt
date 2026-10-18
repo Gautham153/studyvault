@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.StudyItem
 import com.example.data.model.TopicStatus
+import com.example.data.repository.StudyAction
 import com.example.data.repository.StudyPlanning
 import com.example.data.repository.StudyVaultRepository
 import com.example.data.repository.StudyVaultRepositoryProvider
@@ -40,7 +41,7 @@ class StudyViewModel(
         val revisionsByTopic = recentRevisions.groupBy { it.topicId }
         when (filter) {
             StudyFilter.PRIORITY -> recommendations
-                .filter { it.status != TopicStatus.COMPLETED }
+                .filter { it.status != TopicStatus.COMPLETED || it.action == StudyAction.REVISE }
                 .map { StudyPlanning.recommendationToStudyItem(it) }
             StudyFilter.ALL -> recommendations
                 .map { StudyPlanning.recommendationToStudyItem(it) }
