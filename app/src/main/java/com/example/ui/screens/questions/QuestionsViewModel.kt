@@ -161,6 +161,38 @@ class QuestionsViewModel(
         }
     }
 
+    /**
+     * True only when the resource the UI is currently showing (and its load generation) is
+     * exactly the one captured before an asynchronous mutation started.
+     */
+    private fun isSameActiveResource(topicId: String?, subjectId: String?, token: Int): Boolean =
+        token == loadRequestToken && activeTopicId == topicId && activeSubjectId == subjectId
+
+    /**
+     * Re-reads the currently active resource after a mutation persisted for a resource the user
+     * has since navigated away from. Keeps the newly selected list correct without ever applying
+     * the old resource's result to it.
+     */
+    private suspend fun refreshActiveResource() {
+        val topicId = activeTopicId
+        val subjectId = activeSubjectId
+        val token = loadRequestToken
+        try {
+            val questions = when {
+                topicId != null -> repository.getQuestionsForTopic(topicId)
+                subjectId != null -> repository.getQuestionsForSubject(subjectId)
+                else -> return
+            }
+            if (token == loadRequestToken && activeTopicId == topicId && activeSubjectId == subjectId) {
+                _uiState.update { it.copy(questions = questions, isEmpty = questions.isEmpty()) }
+            }
+        } catch (e: Exception) {
+            if (token == loadRequestToken) {
+                _uiState.update { it.copy(errorMessage = e.message ?: "Failed to refresh questions.") }
+            }
+        }
+    }
+
     fun addQuestion(
         subjectId: String,
         unitId: String? = null,
@@ -180,6 +212,12 @@ class QuestionsViewModel(
             return
         }
 
+        // Capture the resource currently shown before the async mutation starts, so a resource
+        // switch while it is in flight can never cause the result to land on the new resource.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
@@ -194,17 +232,24 @@ class QuestionsViewModel(
             )
             result.fold(
                 onSuccess = { created ->
-                    _uiState.update { current ->
-                        val updatedList = current.questions + created
-                        current.copy(
-                            isSaving = false,
-                            questions = updatedList,
-                            isEmpty = false,
-                            successMessage = "Question added successfully."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            current.copy(
+                                isSaving = false,
+                                questions = current.questions + created,
+                                isEmpty = false,
+                                successMessage = "Question added successfully."
+                            )
+                        }
+                    } else {
+                        // Persisted, but the user moved to another resource. Never apply it here;
+                        // refresh the newly selected resource from the source of truth instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Question added successfully.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->
+                    // Always clear isSaving so a failed save can never leave the form stuck.
                     _uiState.update {
                         it.copy(
                             isSaving = false,
@@ -226,19 +271,30 @@ class QuestionsViewModel(
             _uiState.update { it.copy(errorMessage = "Marks must be a positive number.") }
             return
         }
+        // Capture the active resource before the async mutation starts.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
             val result = repository.updateQuestion(question)
             result.fold(
                 onSuccess = { updated ->
-                    _uiState.update { current ->
-                        val updatedList = current.questions.map { if (it.id == updated.id) updated else it }
-                        current.copy(
-                            isSaving = false,
-                            questions = updatedList,
-                            successMessage = "Question updated successfully."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            val updatedList = current.questions.map { if (it.id == updated.id) updated else it }
+                            current.copy(
+                                isSaving = false,
+                                questions = updatedList,
+                                successMessage = "Question updated successfully."
+                            )
+                        }
+                    } else {
+                        // Persisted for the old resource; refresh the newly selected one instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Question updated successfully.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->
@@ -255,20 +311,31 @@ class QuestionsViewModel(
 
     fun deleteQuestion(questionId: String) {
         if (_uiState.value.isSaving) return // guard against duplicate submissions
+        // Capture the active resource before the async mutation starts.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
             val result = repository.deleteQuestion(questionId)
             result.fold(
                 onSuccess = {
-                    _uiState.update { current ->
-                        val updatedList = current.questions.filter { it.id != questionId }
-                        current.copy(
-                            isSaving = false,
-                            questions = updatedList,
-                            isEmpty = updatedList.isEmpty(),
-                            successMessage = "Question deleted."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            val updatedList = current.questions.filter { it.id != questionId }
+                            current.copy(
+                                isSaving = false,
+                                questions = updatedList,
+                                isEmpty = updatedList.isEmpty(),
+                                successMessage = "Question deleted."
+                            )
+                        }
+                    } else {
+                        // Deleted for the old resource; refresh the newly selected one instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Question deleted.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->

@@ -117,8 +117,9 @@ class SupabaseStudyMaterialRepository private constructor() : StudyMaterialRepos
     override suspend fun getMaterialsForSubject(subjectId: String): List<MaterialItem> {
         // Always re-fetch from the repository so a previously cached list can never
         // resurrect deleted files; an empty result after deletion stays empty.
-        loadMaterials(subjectId)
-        return _materials.value.filter { it.subjectId == subjectId }
+        // A failed or discarded reload must surface as a failure (thrown) rather than
+        // masquerading as a successful empty list (or as stale cached materials).
+        return loadMaterials(subjectId).getOrThrow()
     }
 
     override suspend fun getMaterialsForUnit(subjectId: String, unitId: String): List<MaterialItem> {

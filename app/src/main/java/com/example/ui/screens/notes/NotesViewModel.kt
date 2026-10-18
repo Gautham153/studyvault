@@ -160,6 +160,38 @@ class NotesViewModel(
         }
     }
 
+    /**
+     * True only when the resource the UI is currently showing (and its load generation) is
+     * exactly the one captured before an asynchronous mutation started.
+     */
+    private fun isSameActiveResource(topicId: String?, subjectId: String?, token: Int): Boolean =
+        token == loadRequestToken && activeTopicId == topicId && activeSubjectId == subjectId
+
+    /**
+     * Re-reads the currently active resource after a mutation persisted for a resource the user
+     * has since navigated away from. Keeps the newly selected list correct without ever applying
+     * the old resource's result to it.
+     */
+    private suspend fun refreshActiveResource() {
+        val topicId = activeTopicId
+        val subjectId = activeSubjectId
+        val token = loadRequestToken
+        try {
+            val notes = when {
+                topicId != null -> repository.getNotesForTopic(topicId)
+                subjectId != null -> repository.getNotesForSubject(subjectId)
+                else -> return
+            }
+            if (token == loadRequestToken && activeTopicId == topicId && activeSubjectId == subjectId) {
+                _uiState.update { it.copy(notes = notes, isEmpty = notes.isEmpty()) }
+            }
+        } catch (e: Exception) {
+            if (token == loadRequestToken) {
+                _uiState.update { it.copy(errorMessage = e.message ?: "Failed to refresh notes.") }
+            }
+        }
+    }
+
     fun addNote(
         subjectId: String,
         topicId: String? = null,
@@ -173,6 +205,12 @@ class NotesViewModel(
             return
         }
 
+        // Capture the resource currently shown before the async mutation starts, so a resource
+        // switch while it is in flight can never cause the result to land on the new resource.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
@@ -184,17 +222,25 @@ class NotesViewModel(
             )
             result.fold(
                 onSuccess = { created ->
-                    _uiState.update { current ->
-                        val updatedList = current.notes + created
-                        current.copy(
-                            isSaving = false,
-                            notes = updatedList,
-                            isEmpty = false,
-                            successMessage = "Note saved successfully."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            val updatedList = current.notes + created
+                            current.copy(
+                                isSaving = false,
+                                notes = updatedList,
+                                isEmpty = false,
+                                successMessage = "Note saved successfully."
+                            )
+                        }
+                    } else {
+                        // Persisted, but the user moved to another resource. Never apply it here;
+                        // refresh the newly selected resource from the source of truth instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Note saved successfully.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->
+                    // Always clear isSaving so a failed save can never leave the form stuck.
                     _uiState.update {
                         it.copy(
                             isSaving = false,
@@ -214,19 +260,30 @@ class NotesViewModel(
             return
         }
 
+        // Capture the active resource before the async mutation starts.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
             val result = repository.updateNote(note.copy(title = trimmedTitle))
             result.fold(
                 onSuccess = { updated ->
-                    _uiState.update { current ->
-                        val updatedList = current.notes.map { if (it.id == updated.id) updated else it }
-                        current.copy(
-                            isSaving = false,
-                            notes = updatedList,
-                            successMessage = "Note updated successfully."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            val updatedList = current.notes.map { if (it.id == updated.id) updated else it }
+                            current.copy(
+                                isSaving = false,
+                                notes = updatedList,
+                                successMessage = "Note updated successfully."
+                            )
+                        }
+                    } else {
+                        // Persisted for the old resource; refresh the newly selected one instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Note updated successfully.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->
@@ -243,20 +300,31 @@ class NotesViewModel(
 
     fun deleteNote(noteId: String) {
         if (_uiState.value.isSaving) return // guard against duplicate submissions
+        // Capture the active resource before the async mutation starts.
+        val contextTopicId = activeTopicId
+        val contextSubjectId = activeSubjectId
+        val contextToken = loadRequestToken
+
         _uiState.update { it.copy(isSaving = true, errorMessage = null, successMessage = null) }
 
         viewModelScope.launch {
             val result = repository.deleteNote(noteId)
             result.fold(
                 onSuccess = {
-                    _uiState.update { current ->
-                        val updatedList = current.notes.filter { it.id != noteId }
-                        current.copy(
-                            isSaving = false,
-                            notes = updatedList,
-                            isEmpty = updatedList.isEmpty(),
-                            successMessage = "Note deleted."
-                        )
+                    if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
+                        _uiState.update { current ->
+                            val updatedList = current.notes.filter { it.id != noteId }
+                            current.copy(
+                                isSaving = false,
+                                notes = updatedList,
+                                isEmpty = updatedList.isEmpty(),
+                                successMessage = "Note deleted."
+                            )
+                        }
+                    } else {
+                        // Deleted for the old resource; refresh the newly selected one instead.
+                        _uiState.update { it.copy(isSaving = false, successMessage = "Note deleted.") }
+                        refreshActiveResource()
                     }
                 },
                 onFailure = { error ->
