@@ -21,10 +21,13 @@ interface StudyVaultRepository {
     val pastExams: StateFlow<List<ExamItem>>
     val recentRevisions: StateFlow<List<RevisionEvent>>
     val priorityStudyItems: StateFlow<List<StudyItem>>
+    val studyRecommendations: StateFlow<List<StudyRecommendation>>
+    val todayStudyPlan: StateFlow<List<StudyRecommendation>>
     val isLoading: StateFlow<Boolean>
     val errorMessage: StateFlow<String?>
 
     fun getTodayStudyItems(): List<StudyItem>
+    fun setDailyStudyMinutesTarget(minutes: Int?)
     fun getRecentlyAddedMaterials(): List<MaterialItem>
     fun getSubjectById(subjectId: String): Subject?
     fun getUnitById(subjectId: String, unitId: String): UnitModel?

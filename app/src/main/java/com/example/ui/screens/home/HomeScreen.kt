@@ -25,10 +25,13 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,7 +52,11 @@ import com.example.data.model.RevisionEvent
 import com.example.data.model.StudyItem
 import com.example.data.model.Subject
 import com.example.data.model.TopicStatus
+import com.example.data.repository.StudyAction
+import com.example.data.repository.StudyPlanning
+import com.example.data.repository.StudyRecommendation
 import com.example.ui.components.CardWithSubtleBorder
+import com.example.ui.components.PriorityScoreBadge
 import com.example.ui.components.ProgressBarWithPercent
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.SemesterProgressCard
@@ -78,14 +85,17 @@ fun HomeScreen(
 ) {
     val overallProgress by viewModel.overallProgress.collectAsState()
     val subjects by viewModel.subjects.collectAsState()
-    val priorityItems by viewModel.todayStudyItems.collectAsState()
+    val todayPlan by viewModel.todayStudyPlan.collectAsState()
     val upcomingExams by viewModel.upcomingExams.collectAsState()
     val recentRevisions by viewModel.recentRevisions.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val todayStudyItems = priorityItems.take(3)
-    val revisionPriorities = priorityItems.filter { it.topicStatus == TopicStatus.NEEDS_REVISION }.take(3)
+    val revisionPriorities = todayPlan
+        .filter { it.status == TopicStatus.NEEDS_REVISION }
+        .take(3)
+        .map { StudyPlanning.recommendationToStudyItem(it) }
     val recentMaterials = viewModel.getRecentlyAddedMaterials()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val actionError by viewModel.actionError.collectAsState()
 
     LazyColumn(
         modifier = modifier
@@ -189,28 +199,44 @@ fun HomeScreen(
             }
         }
 
-        // STUDY TODAY Section
+        // TODAY'S PLAN Section
         item {
             SectionHeader(
-                title = "Study Today",
+                title = "Today's Plan",
                 actionText = "See all",
                 onActionClick = onNavigateToStudyTab
             )
         }
 
-        if (todayStudyItems.isEmpty()) {
+        actionError?.let { error ->
             item {
                 EmptyHint(
-                    text = "Nothing to study right now.",
-                    modifier = Modifier.testTag("study_today_empty")
+                    text = "Couldn't update topic: $error",
+                    modifier = Modifier.testTag("today_plan_action_error")
                 )
             }
         }
 
-        items(todayStudyItems) { studyItem ->
-            StudyTodayItemCard(
-                item = studyItem,
-                onClick = { onNavigateToTopicDetail(studyItem.topicId) }
+        if (todayPlan.isEmpty()) {
+            item {
+                EmptyHint(
+                    text = when {
+                        isLoading && subjects.isEmpty() -> "Loading your plan..."
+                        errorMessage != null -> "Plan unavailable — see the notice above."
+                        else -> "Your plan is clear — nothing flagged right now."
+                    },
+                    modifier = Modifier.testTag("today_plan_empty")
+                )
+            }
+        }
+
+        items(todayPlan, key = { it.topicId }) { recommendation ->
+            TodayPlanItemCard(
+                recommendation = recommendation,
+                onOpenTopic = { onNavigateToTopicDetail(recommendation.topicId) },
+                onStart = { viewModel.startTopic(recommendation.topicId) },
+                onComplete = { viewModel.completeTopic(recommendation.topicId) },
+                onRevise = { viewModel.reviseTopic(recommendation.topicId) }
             )
         }
 
@@ -314,6 +340,101 @@ fun HomeScreen(
 
         items(recentMaterials) { material ->
             RecentlyAddedCard(material = material)
+        }
+    }
+}
+
+@Composable
+private fun TodayPlanItemCard(
+    recommendation: StudyRecommendation,
+    onOpenTopic: () -> Unit,
+    onStart: () -> Unit,
+    onComplete: () -> Unit,
+    onRevise: () -> Unit
+) {
+    CardWithSubtleBorder(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("today_plan_card_${recommendation.topicId}"),
+        onClick = onOpenTopic
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SubjectIconBadge(iconKey = recommendation.iconKey, size = 42.dp)
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = recommendation.subjectName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = recommendation.topicName,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${recommendation.level.displayLabel} • ~${recommendation.estimatedMinutes} min",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
+
+                PriorityScoreBadge(score = recommendation.score)
+            }
+
+            if (recommendation.reasons.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = recommendation.reasons.joinToString(" • "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val primaryLabel = when (recommendation.action) {
+                    StudyAction.STUDY -> "Start"
+                    StudyAction.CONTINUE -> "Continue"
+                    StudyAction.REVISE -> "Revise"
+                }
+                val primaryAction = when (recommendation.action) {
+                    StudyAction.STUDY -> onStart
+                    StudyAction.CONTINUE -> onOpenTopic
+                    StudyAction.REVISE -> onRevise
+                }
+                Button(
+                    onClick = primaryAction,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryBlueLight,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("today_plan_primary_${recommendation.topicId}")
+                ) {
+                    Text(text = primaryLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                if (recommendation.status != TopicStatus.COMPLETED) {
+                    OutlinedButton(
+                        onClick = onComplete,
+                        modifier = Modifier.testTag("today_plan_done_${recommendation.topicId}")
+                    ) {
+                        Text(text = "Mark done", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
         }
     }
 }

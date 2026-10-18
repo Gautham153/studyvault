@@ -115,6 +115,29 @@ object StudyPlanning {
             )
     }
 
+    /**
+     * Adapts a Phase 7 engine recommendation into the legacy [StudyItem] shape so existing
+     * "Study Today" surfaces keep working while sharing the same deterministic scoring.
+     */
+    fun recommendationToStudyItem(
+        recommendation: StudyRecommendation,
+        todayIso: String = StudyDateUtils.todayIso()
+    ): StudyItem = StudyItem(
+        topicId = recommendation.topicId,
+        subjectId = recommendation.subjectId,
+        unitId = recommendation.unitId,
+        topicName = recommendation.topicName,
+        subjectName = recommendation.subjectName,
+        unitName = recommendation.unitName,
+        priorityScore = recommendation.score,
+        priorityLevel = recommendation.level.displayLabel,
+        statusNote = statusNote(recommendation.status, recommendation.lastRevisedIsoDate, todayIso),
+        topicStatus = recommendation.status,
+        revisionCount = recommendation.revisionCount,
+        lastRevisedAt = recommendation.lastRevisedIsoDate,
+        iconKey = recommendation.iconKey
+    )
+
     /** Study items for topics that have at least one recorded revision, newest revision first. */
     fun buildRevisionStudyItems(
         subjects: List<Subject>,

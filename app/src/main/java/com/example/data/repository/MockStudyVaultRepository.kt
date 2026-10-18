@@ -313,6 +313,14 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     private val _priorityStudyItems = MutableStateFlow<List<StudyItem>>(emptyList())
     override val priorityStudyItems: StateFlow<List<StudyItem>> = _priorityStudyItems.asStateFlow()
 
+    private val _studyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val studyRecommendations: StateFlow<List<StudyRecommendation>> = _studyRecommendations.asStateFlow()
+
+    private val _todayStudyPlan = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val todayStudyPlan: StateFlow<List<StudyRecommendation>> = _todayStudyPlan.asStateFlow()
+
+    private var dailyMinutesTarget: Int? = null
+
     private val _isLoading = MutableStateFlow(false)
     override val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -350,8 +358,12 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         )
     }
 
-    override fun getTodayStudyItems(): List<StudyItem> {
-        return _priorityStudyItems.value.take(3)
+    override fun getTodayStudyItems(): List<StudyItem> =
+        _todayStudyPlan.value.map { StudyPlanning.recommendationToStudyItem(it) }
+
+    override fun setDailyStudyMinutesTarget(minutes: Int?) {
+        dailyMinutesTarget = minutes?.takeIf { it > 0 }
+        recomputeRecommendations()
     }
 
     override fun getRecentlyAddedMaterials(): List<MaterialItem> {
@@ -591,6 +603,7 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(subjects, revisionEventsByTopic)
         _recentRevisions.value = StudyPlanning.recentRevisions(mutableRevisionEvents)
         publishExams(subjects)
+        recomputeRecommendations(subjects)
 
         val topics = StudyPlanning.allTopics(subjects)
         val counts = StudyPlanning.topicCounts(topics)
@@ -625,6 +638,21 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         val schedule = StudyPlanning.classifyExams(derived)
         _upcomingExams.value = schedule.upcoming
         _pastExams.value = schedule.past
+    }
+
+    private fun recomputeRecommendations(subjects: List<Subject> = _subjects.value) {
+        val todayIso = StudyDateUtils.todayIso()
+        val recommendations = StudyPriorityEngine.buildRecommendations(
+            subjects = subjects,
+            upcomingExams = _upcomingExams.value,
+            revisionEventsByTopic = mutableRevisionEvents.groupBy { it.topicId },
+            todayIso = todayIso
+        )
+        _studyRecommendations.value = recommendations
+        _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
+            recommendations = recommendations,
+            config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
+        )
     }
 
     override fun addSubject(subjectName: String, code: String, iconKey: String) {

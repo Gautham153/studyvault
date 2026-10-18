@@ -124,6 +124,17 @@ object StudyDateUtils {
         return days < 0
     }
 
+    /**
+     * Signed day difference between two ISO calendar dates (to - from): 0 for the same day,
+     * positive when [toIso] is later, negative when earlier. Returns null when either date is
+     * missing or unparseable, so callers never treat an unknown date as "today".
+     */
+    fun daysBetweenIso(fromIso: String?, toIso: String?): Int? {
+        val from = fromIso?.let { parseIsoDate(it) } ?: return null
+        val to = toIso?.let { parseIsoDate(it) } ?: return null
+        return (dayIndex(to) - dayIndex(from)).toInt()
+    }
+
     /** "Today", "Tomorrow", "in 5 days", "3 days ago", or "Date unavailable" when unknown. */
     fun describeDaysUntil(days: Int?): String {
         if (days == null) return "Date unavailable"

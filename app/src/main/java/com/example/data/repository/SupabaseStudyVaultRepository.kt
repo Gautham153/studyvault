@@ -84,6 +84,14 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     private val _priorityStudyItems = MutableStateFlow<List<StudyItem>>(emptyList())
     override val priorityStudyItems: StateFlow<List<StudyItem>> = _priorityStudyItems.asStateFlow()
 
+    private val _studyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val studyRecommendations: StateFlow<List<StudyRecommendation>> = _studyRecommendations.asStateFlow()
+
+    private val _todayStudyPlan = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val todayStudyPlan: StateFlow<List<StudyRecommendation>> = _todayStudyPlan.asStateFlow()
+
+    private var dailyMinutesTarget: Int? = null
+
     private val _isLoading = MutableStateFlow(false)
     override val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -123,6 +131,8 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         _pastExams.value = emptyList()
         _recentRevisions.value = emptyList()
         _priorityStudyItems.value = emptyList()
+        _studyRecommendations.value = emptyList()
+        _todayStudyPlan.value = emptyList()
         allUnits = emptyList()
         allTopics = emptyList()
         allQuestions = emptyList()
@@ -282,6 +292,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                 subjects = domainSubjects,
                 revisionEventsByTopic = revisionEvents.groupBy { it.topicId }
             )
+            recomputeRecommendations(domainSubjects)
 
             // Calculate overall progress from real topic data
             val topicCounts = StudyPlanning.topicCounts(StudyPlanning.allTopics(domainSubjects))
@@ -587,8 +598,12 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
 
     // --- StudyVaultRepository Interface Implementation ---
 
-    override fun getTodayStudyItems(): List<StudyItem> {
-        return _priorityStudyItems.value.take(3)
+    override fun getTodayStudyItems(): List<StudyItem> =
+        _todayStudyPlan.value.map { StudyPlanning.recommendationToStudyItem(it) }
+
+    override fun setDailyStudyMinutesTarget(minutes: Int?) {
+        dailyMinutesTarget = minutes?.takeIf { it > 0 }
+        recomputeRecommendations()
     }
 
     override fun getRecentlyAddedMaterials(): List<MaterialItem> {
@@ -832,6 +847,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             revisionEventsByTopic = currentRevisionEvents().groupBy { it.topicId }
         )
         recalculateOverallProgress()
+        recomputeRecommendations()
     }
 
     private fun currentRevisionEvents(): List<RevisionEvent> =
@@ -843,6 +859,21 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         _priorityStudyItems.value = StudyPlanning.buildPriorityStudyItems(
             subjects = _subjects.value,
             revisionEventsByTopic = events.groupBy { it.topicId }
+        )
+        recomputeRecommendations()
+    }
+
+    private fun recomputeRecommendations(subjects: List<Subject> = _subjects.value) {
+        val recommendations = StudyPriorityEngine.buildRecommendations(
+            subjects = subjects,
+            upcomingExams = _upcomingExams.value,
+            revisionEventsByTopic = currentRevisionEvents().groupBy { it.topicId },
+            todayIso = StudyDateUtils.todayIso()
+        )
+        _studyRecommendations.value = recommendations
+        _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
+            recommendations = recommendations,
+            config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
         )
     }
 
@@ -990,6 +1021,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             allExams = allExams + dto
             publishExams(assembleExamItems(allExams, _subjects.value))
             recalculateOverallProgress()
+            recomputeRecommendations()
             _errorMessage.value = null
             Log.i(TAG, "Successfully inserted exam '$trimmedName' ($isoDate) to Supabase.")
             getExamById(newId)?.let { Result.success(it) }
@@ -1072,6 +1104,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
             publishExams(assembleExamItems(allExams, _subjects.value))
             recalculateOverallProgress()
+            recomputeRecommendations()
             _errorMessage.value = null
             Log.i(TAG, "Successfully updated exam $examId")
             getExamById(examId)?.let { Result.success(it) }
@@ -1109,6 +1142,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             allExams = allExams.filter { it.id != examId }
             publishExams(assembleExamItems(allExams, _subjects.value))
             recalculateOverallProgress()
+            recomputeRecommendations()
             _errorMessage.value = null
             Log.i(TAG, "Successfully deleted exam $examId")
             Result.success(Unit)

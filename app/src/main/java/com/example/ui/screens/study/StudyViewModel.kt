@@ -33,19 +33,20 @@ class StudyViewModel(
 
     val studyItems: StateFlow<List<StudyItem>> = combine(
         _selectedFilter,
-        repository.priorityStudyItems,
+        repository.studyRecommendations,
         repository.subjects,
         repository.recentRevisions
-    ) { filter, priorityItems, subjects, recentRevisions ->
+    ) { filter, recommendations, subjects, recentRevisions ->
         val revisionsByTopic = recentRevisions.groupBy { it.topicId }
         when (filter) {
-            StudyFilter.PRIORITY -> priorityItems
-            StudyFilter.ALL -> StudyPlanning.buildPriorityStudyItems(
-                subjects = subjects,
-                revisionEventsByTopic = revisionsByTopic,
-                includeCompleted = true
-            )
-            StudyFilter.NEEDS_REVISION -> priorityItems.filter { it.topicStatus == TopicStatus.NEEDS_REVISION }
+            StudyFilter.PRIORITY -> recommendations
+                .filter { it.status != TopicStatus.COMPLETED }
+                .map { StudyPlanning.recommendationToStudyItem(it) }
+            StudyFilter.ALL -> recommendations
+                .map { StudyPlanning.recommendationToStudyItem(it) }
+            StudyFilter.NEEDS_REVISION -> recommendations
+                .filter { it.status == TopicStatus.NEEDS_REVISION }
+                .map { StudyPlanning.recommendationToStudyItem(it) }
             StudyFilter.RECENTLY_REVISED -> StudyPlanning.buildRevisionStudyItems(subjects, revisionsByTopic)
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
