@@ -86,10 +86,11 @@ fun HomeScreen(
     val overallProgress by viewModel.overallProgress.collectAsState()
     val subjects by viewModel.subjects.collectAsState()
     val todayPlan by viewModel.todayStudyPlan.collectAsState()
+    val allRecommendations by viewModel.studyRecommendations.collectAsState()
     val upcomingExams by viewModel.upcomingExams.collectAsState()
     val recentRevisions by viewModel.recentRevisions.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val revisionPriorities = todayPlan
+    val revisionPriorities = allRecommendations
         .filter { it.status == TopicStatus.NEEDS_REVISION || it.action == StudyAction.REVISE }
         .take(3)
         .map { StudyPlanning.recommendationToStudyItem(it) }
@@ -447,7 +448,7 @@ private fun StudyTodayItemCard(
     CardWithSubtleBorder(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("study_today_card_${item.topicId}"),
+            .testTag("revision_priority_card_${item.topicId}"),
         onClick = onClick
     ) {
         Row(

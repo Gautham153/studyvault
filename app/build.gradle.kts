@@ -5,6 +5,31 @@ plugins {
     alias(libs.plugins.secrets)
 }
 
+/*
+ * Release signing is supplied externally so keystores and passwords are never committed.
+ * All four values are required before release builds are signed — each one may be provided
+ * either as a Gradle property (e.g. in ~/.gradle/gradle.properties or via -P) or as an
+ * environment variable of the same name:
+ *
+ *   RELEASE_STORE_FILE      path to the release keystore (absolute, or project-root relative)
+ *   RELEASE_STORE_PASSWORD  keystore password
+ *   RELEASE_KEY_ALIAS       key alias
+ *   RELEASE_KEY_PASSWORD    key password
+ *
+ * While any value is missing, release builds are assembled unsigned. Debug builds and unit
+ * tests use the standard Android debug signing configuration (the AGP-managed
+ * ~/.android/debug.keystore), so they need no keystore in the repository.
+ */
+fun releaseSigningValue(name: String): String =
+    (providers.gradleProperty(name).orNull ?: System.getenv(name)).orEmpty()
+
+val releaseStoreFile = releaseSigningValue("RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("RELEASE_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+    .all { it.isNotBlank() }
+
 android {
     namespace = "com.example"
     compileSdk = 36
@@ -20,11 +45,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -35,7 +62,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")

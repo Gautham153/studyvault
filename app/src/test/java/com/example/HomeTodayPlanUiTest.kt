@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -74,12 +75,15 @@ class HomeTodayPlanUiTest {
     }
 
     /**
-     * Regression: the Home "Revision Priorities" section must surface completed topics the engine
-     * recommends revising (action == REVISE), not only topics stored as NEEDS_REVISION, and a
-     * completed topic that is freshly revised (no revision need) must disappear from the section.
+     * Regression: the Home "Revision Priorities" section derives from the full engine
+     * recommendation list (not the five-item Today's Plan), so a completed topic the engine
+     * recommends revising must appear in the section even when it is not in the selected plan,
+     * while a freshly revised completed topic with no revision need must not appear. The section
+     * is identified through its dedicated `revision_priority_card_` tags, which are never used by
+     * the Today's Plan cards.
      */
     @Test
-    fun revisionPrioritiesIncludeEngineFlaggedCompletedTopicsAndDropFreshlyRevisedOnes() {
+    fun revisionPrioritiesIncludeFlaggedTopicsOutsideTodaysPlanAndDropFreshlyRevisedOnes() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         try {
             val repository = MockStudyVaultRepository.createIsolated()
@@ -97,31 +101,48 @@ class HomeTodayPlanUiTest {
                 }
             }
 
-            val completedNeedingRevision = "t_java_u2_1" // completed + idle -> engine REVISE
+            val flaggedOutsidePlan = "t_java_u2_7" // completed, never revised -> REVISE, below the plan cap
+            val flaggedInsidePlan = "t_java_u2_1"  // completed + idle -> REVISE, inside the plan
+            val stillFlaggedAnchor = "t_java_u2_2"  // completed + idle -> REVISE, used as scroll anchor
+
+            // The flagged topic is a REVISE recommendation that did NOT make the Today's Plan.
             assertEquals(
                 StudyAction.REVISE,
-                repository.todayStudyPlan.value.first { it.topicId == completedNeedingRevision }.action
+                repository.studyRecommendations.value.first { it.topicId == flaggedOutsidePlan }.action
             )
+            assertTrue(
+                "Fixture must sit outside the capped Today's Plan",
+                repository.todayStudyPlan.value.none { it.topicId == flaggedOutsidePlan }
+            )
+            assertTrue(repository.todayStudyPlan.value.any { it.topicId == flaggedInsidePlan })
 
+            // While the last planned card is on screen, the out-of-plan topic's plan card is absent.
             composeRule.onNodeWithTag("home_screen")
-                .performScrollToNode(hasTestTag("study_today_card_$completedNeedingRevision"))
-            composeRule.onNodeWithTag("study_today_card_$completedNeedingRevision").assertExists()
+                .performScrollToNode(hasTestTag("today_plan_card_$flaggedInsidePlan"))
+            composeRule.onNodeWithTag("today_plan_card_$flaggedInsidePlan").assertExists()
+            composeRule.onNodeWithTag("today_plan_card_$flaggedOutsidePlan").assertDoesNotExist()
 
-            runBlocking { repository.markTopicRevised(completedNeedingRevision) }
+            // ...yet it still appears in Revision Priorities (section-scoped tags).
+            composeRule.onNodeWithTag("home_screen")
+                .performScrollToNode(hasTestTag("revision_priority_card_$flaggedOutsidePlan"))
+            composeRule.onNodeWithTag("revision_priority_card_$flaggedOutsidePlan").assertExists()
+            composeRule.onNodeWithTag("revision_priority_card_$flaggedInsidePlan").assertExists()
+
+            runBlocking { repository.markTopicRevised(flaggedInsidePlan) }
             composeRule.waitForIdle()
 
             assertFalse(
                 "Freshly revised completed topic must have no revision need",
-                repository.todayStudyPlan.value
-                    .any { it.topicId == completedNeedingRevision && it.action == StudyAction.REVISE }
+                repository.studyRecommendations.value
+                    .any { it.topicId == flaggedInsidePlan && it.action == StudyAction.REVISE }
             )
 
-            // The section still shows the other completed topic the engine keeps flagging
-            // (t_java_u2_2); anchoring the viewport there makes the absence check meaningful.
+            // Anchor on a still-flagged section card; the freshly revised topic must be gone
+            // from the Revision Priorities section.
             composeRule.onNodeWithTag("home_screen")
-                .performScrollToNode(hasTestTag("study_today_card_t_java_u2_2"))
-            composeRule.onNodeWithTag("study_today_card_t_java_u2_2").assertExists()
-            composeRule.onNodeWithTag("study_today_card_$completedNeedingRevision").assertDoesNotExist()
+                .performScrollToNode(hasTestTag("revision_priority_card_$stillFlaggedAnchor"))
+            composeRule.onNodeWithTag("revision_priority_card_$stillFlaggedAnchor").assertExists()
+            composeRule.onNodeWithTag("revision_priority_card_$flaggedInsidePlan").assertDoesNotExist()
         } finally {
             Dispatchers.resetMain()
         }
