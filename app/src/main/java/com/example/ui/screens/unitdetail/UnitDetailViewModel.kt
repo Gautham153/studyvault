@@ -42,6 +42,9 @@ class UnitDetailViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _isCreatingTopic = MutableStateFlow(false)
+    val isCreatingTopic: StateFlow<Boolean> = _isCreatingTopic.asStateFlow()
+
     // Live materials for this unit, sourced exclusively from the material repository.
     // No cached unit-materials fallback: an empty repository list stays empty after loads
     // and deletions, so removed files cannot reappear.
@@ -156,24 +159,36 @@ class UnitDetailViewModel(
         _statusMessage.value = null
     }
 
-    fun createTopic(title: String, onCreated: (String) -> Unit = {}) {
+    /**
+     * Creates a topic under the unit currently on screen. Guards against duplicate submits
+     * while a request is in flight, refreshes the unit (so the new topic and the Topics (N)
+     * count appear immediately), and reports the real repository error on failure. It does
+     * not navigate away: [onCreated] only fires after a persisted success.
+     */
+    fun createTopic(title: String, onCreated: () -> Unit = {}) {
         val sId = currentSubjectId ?: return
         val uId = currentUnitId ?: return
+        if (_isCreatingTopic.value) return
+        _isCreatingTopic.value = true
         viewModelScope.launch {
-            _errorMessage.value = null
-            _statusMessage.value = null
-            val result = repository.createTopic(subjectId = sId, unitId = uId, title = title)
-            result.fold(
-                onSuccess = { topic ->
-                    _statusMessage.value = "Added topic ${topic.title}"
-                    _subject.value = repository.getSubjectById(sId)
-                    _unit.value = repository.getUnitById(sId, uId)
-                    onCreated(topic.id)
-                },
-                onFailure = { error ->
-                    _errorMessage.value = error.message ?: "Failed to add topic."
-                }
-            )
+            try {
+                _errorMessage.value = null
+                _statusMessage.value = null
+                val result = repository.createTopic(subjectId = sId, unitId = uId, title = title)
+                result.fold(
+                    onSuccess = { topic ->
+                        _statusMessage.value = "Added topic ${topic.title}"
+                        _subject.value = repository.getSubjectById(sId)
+                        _unit.value = repository.getUnitById(sId, uId)
+                        onCreated()
+                    },
+                    onFailure = { error ->
+                        _errorMessage.value = error.message ?: "Failed to add topic."
+                    }
+                )
+            } finally {
+                _isCreatingTopic.value = false
+            }
         }
     }
 }

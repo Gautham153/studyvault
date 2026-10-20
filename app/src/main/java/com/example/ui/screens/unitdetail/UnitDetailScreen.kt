@@ -112,6 +112,7 @@ fun UnitDetailScreen(
     val uploadProgress by viewModel.uploadProgress.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
+    val isCreatingTopic by viewModel.isCreatingTopic.collectAsState()
 
     val questionsState by questionsViewModel.uiState.collectAsState()
     val unitQuestions = questionsState.questions.filter { it.unitId == unitId }
@@ -219,7 +220,8 @@ fun UnitDetailScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("unit_detail_list"),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Unit Title and Progress Card
@@ -878,19 +880,22 @@ fun UnitDetailScreen(
 
     if (showAddTopicDialog) {
         AddTopicDialog(
+            isSaving = isCreatingTopic,
+            errorMessage = errorMessage,
             onDismiss = { showAddTopicDialog = false },
             onSave = { title ->
-                viewModel.createTopic(title) { topicId ->
-                    onNavigateToTopicDetail(topicId)
+                viewModel.createTopic(title) {
+                    showAddTopicDialog = false
                 }
-                showAddTopicDialog = false
             }
         )
     }
 }
 
 @Composable
-private fun AddTopicDialog(
+internal fun AddTopicDialog(
+    isSaving: Boolean,
+    errorMessage: String?,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit
 ) {
@@ -898,7 +903,7 @@ private fun AddTopicDialog(
     var validationError by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isSaving) onDismiss() },
         title = {
             Text(
                 text = "Add Topic",
@@ -920,12 +925,13 @@ private fun AddTopicDialog(
                     },
                     label = { Text("Topic title") },
                     singleLine = true,
-                    isError = validationError != null,
+                    enabled = !isSaving,
+                    isError = validationError != null || errorMessage != null,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("add_topic_title_field")
                 )
-                validationError?.let { message ->
+                (validationError ?: errorMessage)?.let { message ->
                     Text(
                         text = message,
                         color = StatusRed,
@@ -944,14 +950,23 @@ private fun AddTopicDialog(
                         onSave(title)
                     }
                 },
+                enabled = !isSaving,
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                 modifier = Modifier.testTag("add_topic_confirm_button")
             ) {
-                Text("Add", color = Color.White)
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(if (isSaving) "Adding..." else "Add", color = Color.White)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !isSaving) {
                 Text("Cancel", color = TextSecondary)
             }
         },
