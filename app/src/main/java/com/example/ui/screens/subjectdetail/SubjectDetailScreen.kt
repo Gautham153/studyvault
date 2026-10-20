@@ -300,7 +300,7 @@ private fun SubjectOverviewTab(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionHeader(title = "Unit Progress")
+                SectionHeader(title = "Unit Progress", modifier = Modifier.weight(1f))
                 TextButton(
                     onClick = { showAddUnitDialog = true },
                     modifier = Modifier.testTag("add_unit_button")
@@ -548,6 +548,7 @@ private fun UnitNameDialog(
                     onValueChange = { name = it },
                     label = { Text("Unit Name") },
                     singleLine = true,
+                    modifier = Modifier.testTag("unit_name_field"),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = SurfaceDark,
                         unfocusedContainerColor = SurfaceDark,
@@ -577,6 +578,7 @@ private fun UnitNameDialog(
             Button(
                 onClick = { onConfirm(name, orderText.toIntOrNull()) },
                 enabled = name.isNotBlank(),
+                modifier = Modifier.testTag("unit_name_confirm"),
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                 shape = RoundedCornerShape(8.dp)
             ) {
