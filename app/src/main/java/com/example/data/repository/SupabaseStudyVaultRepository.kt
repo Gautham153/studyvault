@@ -48,6 +48,10 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 
+internal const val DEFAULT_QUESTION_MARKS = 5
+
+internal fun QuestionDto.marksOrDefault(): Int = marks ?: DEFAULT_QUESTION_MARKS
+
 class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -328,7 +332,10 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             if (requestToken == loadRequestToken && getUserId() == startingUserId) {
                 Log.e(TAG, "Error loading data from Supabase", e)
                 clearData()
-                _errorMessage.value = e.message ?: "Failed to load academic data from Supabase."
+                val detail = e.message ?: e::class.java.simpleName
+                _errorMessage.value = "Failed to load study data from the cloud: $detail. " +
+                    "Dashboard sections may appear empty until a reload succeeds; " +
+                    "restart the app to retry the load."
             }
         } finally {
             if (requestToken == loadRequestToken) {
@@ -431,7 +438,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                                 id = qDto.id ?: "q_$idx",
                                 questionNumber = idx + 1,
                                 questionText = qDto.question,
-                                marks = qDto.marks,
+                                marks = qDto.marksOrDefault(),
                                 unitName = uDto.name,
                                 subjectName = sDto.name,
                                 status = mapQuestionStatusToDisplay(qDto.status),
@@ -479,7 +486,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                         id = qDto.id ?: "sq_$idx",
                         questionNumber = idx + 1,
                         questionText = qDto.question,
-                        marks = qDto.marks,
+                        marks = qDto.marksOrDefault(),
                         unitName = unitName,
                         subjectName = sDto.name,
                         status = mapQuestionStatusToDisplay(qDto.status),
@@ -1191,7 +1198,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     id = qDto.id ?: "q_$idx",
                     questionNumber = idx + 1,
                     questionText = qDto.question,
-                    marks = qDto.marks,
+                    marks = qDto.marksOrDefault(),
                     unitName = unitName,
                     subjectName = subName,
                     status = mapQuestionStatusToDisplay(qDto.status),
@@ -1233,7 +1240,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     id = qDto.id ?: "q_$idx",
                     questionNumber = idx + 1,
                     questionText = qDto.question,
-                    marks = qDto.marks,
+                    marks = qDto.marksOrDefault(),
                     unitName = topic?.title ?: "",
                     subjectName = getSubjectById(qDto.subjectId)?.name ?: "",
                     status = mapQuestionStatusToDisplay(qDto.status),

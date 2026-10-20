@@ -98,7 +98,7 @@ data class QuestionDto(
     @SerialName("unit_id") val unitId: String? = null,
     @SerialName("topic_id") val topicId: String? = null,
     @SerialName("question") val question: String,
-    @SerialName("marks") val marks: Int = 5,
+    @SerialName("marks") val marks: Int? = null,
     @SerialName("importance") val importance: String = "MEDIUM",
     @SerialName("status") val status: String = "NOT_PREPARED",
     @SerialName("created_at") val createdAt: String? = null,
