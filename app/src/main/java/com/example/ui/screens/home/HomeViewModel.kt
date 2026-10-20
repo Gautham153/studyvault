@@ -31,7 +31,7 @@ class HomeViewModel(
     val overallProgress: StateFlow<OverallProgress> = repository.overallProgress
     val subjects: StateFlow<List<Subject>> = repository.subjects
     val todayStudyPlan: StateFlow<List<StudyRecommendation>> = repository.todayStudyPlan
-    val studyRecommendations: StateFlow<List<StudyRecommendation>> = repository.studyRecommendations
+    val allStudyRecommendations: StateFlow<List<StudyRecommendation>> = repository.allStudyRecommendations
     val upcomingExams: StateFlow<List<ExamItem>> = repository.upcomingExams
     val recentRevisions: StateFlow<List<RevisionEvent>> = repository.recentRevisions
     val isLoading: StateFlow<Boolean> = repository.isLoading

@@ -1,6 +1,7 @@
 package com.example
 
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -148,6 +149,84 @@ class StudyScreenQuestionRecommendationsTest {
 
             assertEquals(listOf("t_java_u2_5"), topicDestinations)
             assertEquals(1, questionDestinations.size)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    /**
+     * A question saved under DBMS with HIGH importance and "High Priority" status surfaces in
+     * the Study Priority and All filters with its Practice label, routes to DBMS's Questions
+     * tab on tap, appears alongside topic recommendations in All, and is never fabricated into
+     * Recently Revised (which stays backed by real revision-history records).
+     */
+    @Test
+    fun dbmsHighPriorityQuestionShowsPracticeInFiltersAndIsNotInRecentlyRevised() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        try {
+            val repository = MockStudyVaultRepository.createIsolated()
+            val added = runBlocking {
+                repository.addQuestion(
+                    subjectId = "s_dbms",
+                    unitId = "u_dbms_1",
+                    topicId = null,
+                    questionText = "Explain transaction schedules and conflict serializability",
+                    marks = 10,
+                    importance = Importance.HIGH,
+                    status = "High Priority"
+                ).getOrThrow()
+            }
+
+            val viewModel = StudyViewModel(repository)
+            val questionDestinations = mutableListOf<String>()
+            val topicDestinations = mutableListOf<String>()
+            composeRule.setContent {
+                StudyVaultTheme {
+                    StudyScreen(
+                        onNavigateToTopicDetail = { topicDestinations += it },
+                        onNavigateToSubjectQuestions = { questionDestinations += it },
+                        viewModel = viewModel
+                    )
+                }
+            }
+            val subscription = CoroutineScope(Dispatchers.Main).launch { viewModel.studyItems.collect {} }
+
+            viewModel.setFilter(StudyFilter.PRIORITY)
+            composeRule.waitForIdle()
+            assertTrue(
+                "DBMS High Priority question must appear in Study Priority",
+                viewModel.studyItems.value.any { it.questionId == added.id }
+            )
+
+            composeRule.onNodeWithTag("study_screen")
+                .performScrollToNode(hasTestTag("study_item_card_q_${added.id}"))
+            composeRule.onNode(
+                hasTestTag("study_item_card_q_${added.id}") and hasText("Practice", substring = true)
+            ).assertExists()
+
+            composeRule.onNodeWithTag("study_item_card_q_${added.id}").performClick()
+            composeRule.waitForIdle()
+            assertEquals(listOf("s_dbms"), questionDestinations)
+            assertTrue(topicDestinations.isEmpty())
+
+            // The All filter shows both topic and question recommendations.
+            viewModel.setFilter(StudyFilter.ALL)
+            composeRule.waitForIdle()
+            val allItems = viewModel.studyItems.value
+            assertTrue(allItems.any { it.questionId == added.id })
+            assertTrue("All must still include topic recommendations", allItems.any { !it.isQuestion })
+
+            // Recently Revised stays based on revision history (seeded java revisions only).
+            viewModel.setFilter(StudyFilter.RECENTLY_REVISED)
+            composeRule.waitForIdle()
+            val revised = viewModel.studyItems.value
+            assertTrue(revised.any { it.topicId == "t_java_u2_1" })
+            assertTrue(
+                "A high-priority question must never appear in Recently Revised",
+                revised.none { it.isQuestion }
+            )
+
+            subscription.cancel()
         } finally {
             Dispatchers.resetMain()
         }

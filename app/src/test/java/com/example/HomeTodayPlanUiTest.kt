@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import com.example.data.model.Importance
 import com.example.data.model.TopicStatus
 import com.example.data.repository.MockStudyVaultRepository
 import com.example.data.repository.StudyAction
@@ -143,6 +144,73 @@ class HomeTodayPlanUiTest {
                 .performScrollToNode(hasTestTag("revision_priority_card_$stillFlaggedAnchor"))
             composeRule.onNodeWithTag("revision_priority_card_$stillFlaggedAnchor").assertExists()
             composeRule.onNodeWithTag("revision_priority_card_$flaggedInsidePlan").assertDoesNotExist()
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    /**
+     * Regression: Home's Revision Priorities section is backed by the combined
+     * topic + question recommendation source, so a High Priority question surfaces there even
+     * when its score leaves it outside the five-item Today's Plan.
+     */
+    @Test
+    fun revisionPrioritiesIncludeHighPriorityQuestionOutsideFiveItemTodaysPlan() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        try {
+            val repository = MockStudyVaultRepository.createIsolated()
+            val added = runBlocking {
+                repository.addQuestion(
+                    subjectId = "s_dbms",
+                    unitId = "u_dbms_1",
+                    topicId = null,
+                    questionText = "Define the ACID properties of transactions",
+                    marks = 7,
+                    importance = Importance.LOW,
+                    status = "High Priority"
+                ).getOrThrow()
+            }
+            val viewModel = HomeViewModel(repository)
+            composeRule.setContent {
+                StudyVaultTheme {
+                    HomeScreen(
+                        onNavigateToSubjectDetail = {},
+                        onNavigateToTopicDetail = {},
+                        onNavigateToSubjectsTab = {},
+                        onNavigateToStudyTab = {},
+                        onOpenProfile = {},
+                        viewModel = viewModel
+                    )
+                }
+            }
+
+            // The question is a flagged (NEEDS_REVISION / PRACTICE) recommendation...
+            val questionRec =
+                repository.allStudyRecommendations.value.first { it.questionId == added.id }
+            assertEquals(TopicStatus.NEEDS_REVISION, questionRec.status)
+            assertEquals(StudyAction.PRACTICE, questionRec.action)
+
+            // ...while the capped five-item plan does not contain it (this section's premise).
+            assertEquals(5, repository.todayStudyPlan.value.size)
+            assertTrue(
+                "Fixture question must sit outside the capped Today's Plan",
+                repository.todayStudyPlan.value.none { it.isQuestion }
+            )
+            assertTrue(repository.studyRecommendations.value.none { it.isQuestion })
+
+            // The last plan card renders...
+            val lastPlanned = repository.todayStudyPlan.value.last()
+            composeRule.onNodeWithTag("home_screen")
+                .performScrollToNode(hasTestTag("today_plan_card_${lastPlanned.topicId}"))
+            composeRule.onNodeWithTag("today_plan_card_${lastPlanned.topicId}").assertExists()
+
+            // ...the question has no plan card...
+            composeRule.onNodeWithTag("today_plan_card_q_${added.id}").assertDoesNotExist()
+
+            // ...yet it appears in Revision Priorities.
+            composeRule.onNodeWithTag("home_screen")
+                .performScrollToNode(hasTestTag("revision_priority_card_q_${added.id}"))
+            composeRule.onNodeWithTag("revision_priority_card_q_${added.id}").assertExists()
         } finally {
             Dispatchers.resetMain()
         }
