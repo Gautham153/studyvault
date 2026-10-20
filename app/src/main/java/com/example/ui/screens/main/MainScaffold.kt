@@ -69,6 +69,7 @@ sealed class BottomTab(
 @Composable
 fun MainScaffold(
     onNavigateToSubjectDetail: (String) -> Unit,
+    onNavigateToSubjectQuestions: (String) -> Unit,
     onNavigateToTopicDetail: (String) -> Unit,
     onOpenProfile: () -> Unit,
     modifier: Modifier = Modifier
@@ -142,6 +143,7 @@ fun MainScaffold(
             when (selectedTabIndex) {
                 0 -> HomeScreen(
                     onNavigateToSubjectDetail = onNavigateToSubjectDetail,
+                    onNavigateToSubjectQuestions = onNavigateToSubjectQuestions,
                     onNavigateToTopicDetail = onNavigateToTopicDetail,
                     onNavigateToSubjectsTab = { selectedTabIndex = 1 },
                     onNavigateToStudyTab = { selectedTabIndex = 2 },

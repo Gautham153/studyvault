@@ -30,13 +30,15 @@ enum class PriorityLevel {
 enum class StudyAction {
     STUDY,
     CONTINUE,
-    REVISE;
+    REVISE,
+    PRACTICE;
 
     val displayLabel: String
         get() = when (this) {
             STUDY -> "Start"
             CONTINUE -> "Continue"
             REVISE -> "Revise"
+            PRACTICE -> "Practice"
         }
 }
 
@@ -64,8 +66,32 @@ data class TopicStudySnapshot(
 )
 
 /**
+ * Immutable, dependency-free view of a single important question. [status] is the mapped
+ * preparation status ("Not Prepared" -> NOT_STARTED, "Learning" -> LEARNING,
+ * "High Priority" -> NEEDS_REVISION, "Prepared" -> COMPLETED); [linkedTopicId] is the real
+ * linked topic id or null when the question has no topic link (never invented).
+ */
+data class QuestionStudySnapshot(
+    val questionId: String,
+    val subjectId: String,
+    val unitId: String,
+    val questionText: String,
+    val subjectName: String,
+    val unitName: String,
+    val iconKey: String,
+    val status: TopicStatus,
+    val importance: Importance,
+    val marks: Int,
+    val daysUntilExam: Int?,
+    val examDateDisplay: String?,
+    val examName: String?,
+    val linkedTopicId: String?
+)
+
+/**
  * A scored, explained recommendation. [reasons] are short, human-readable strings derived from
  * the same data used for scoring so the UI never has to guess why a topic surfaced.
+ * Question recommendations carry a non-null [questionId]; topic recommendations never do.
  */
 data class StudyRecommendation(
     val topicId: String,
@@ -86,8 +112,16 @@ data class StudyRecommendation(
     val examDateDisplay: String?,
     val examName: String?,
     val lastRevisedIsoDate: String?,
-    val revisionCount: Int
-)
+    val revisionCount: Int,
+    val questionId: String? = null
+) {
+    val isQuestion: Boolean
+        get() = questionId != null
+
+    /** Stable dedupe/navigation key that never collides between a question and its linked topic. */
+    val recommendationKey: String
+        get() = if (questionId != null) "question:$questionId" else "topic:$topicId"
+}
 
 /** Bounds for selecting a realistic Today's Plan (no persistence; recomputed on demand). */
 data class TodayPlanConfig(
@@ -119,6 +153,9 @@ object StudyPriorityEngine {
     const val MAX_EXAM_URGENCY = 30
     const val MAX_REVISION_SIGNAL = 20
     const val MAX_SCORE = MAX_IMPORTANCE + MAX_PROGRESS_GAP + MAX_EXAM_URGENCY + MAX_REVISION_SIGNAL
+
+    // Question-specific caps (kept explicit so tests can assert the bounds).
+    const val MAX_QUESTION_MARKS_SIGNAL = 20
 
     fun buildSnapshots(
         subjects: List<Subject>,
@@ -174,6 +211,57 @@ object StudyPriorityEngine {
             .map { snapshot -> score(snapshot, todayIso) }
             .sortedWith(recommendationOrder())
 
+    fun buildQuestionSnapshots(
+        subjects: List<Subject>,
+        upcomingExams: List<ExamItem>,
+        todayIso: String = StudyDateUtils.todayIso()
+    ): List<QuestionStudySnapshot> {
+        val nearestExamBySubject = nearestUpcomingExamBySubject(upcomingExams, todayIso)
+        return subjects.flatMap { subject ->
+            subject.questions.map { question ->
+                val exam = nearestExamBySubject[subject.id]
+                QuestionStudySnapshot(
+                    questionId = question.id,
+                    subjectId = subject.id,
+                    unitId = question.unitId ?: "",
+                    questionText = question.questionText,
+                    subjectName = subject.name,
+                    unitName = question.unitName,
+                    iconKey = subject.iconKey,
+                    status = questionPrepStatus(question.status),
+                    importance = question.importance,
+                    marks = question.marks,
+                    daysUntilExam = exam?.first,
+                    examDateDisplay = exam?.second?.examDate,
+                    examName = exam?.second?.name?.takeIf { it.isNotBlank() },
+                    linkedTopicId = question.topicId
+                )
+            }
+        }
+    }
+
+    /**
+     * Recommendations for important questions that still need preparation. A question is eligible
+     * when its importance is HIGH and its mapped preparation status is not COMPLETED; questions
+     * whose importance is only MEDIUM or LOW never surface, so seeded/mock data without explicit
+     * HIGH-importance questions leaves the plan unchanged.
+     */
+    fun buildQuestionRecommendations(
+        subjects: List<Subject>,
+        upcomingExams: List<ExamItem>,
+        todayIso: String = StudyDateUtils.todayIso()
+    ): List<StudyRecommendation> =
+        buildQuestionRecommendations(buildQuestionSnapshots(subjects, upcomingExams, todayIso), todayIso)
+
+    fun buildQuestionRecommendations(
+        snapshots: List<QuestionStudySnapshot>,
+        todayIso: String = StudyDateUtils.todayIso()
+    ): List<StudyRecommendation> =
+        snapshots
+            .filter { it.importance == Importance.HIGH && it.status != TopicStatus.COMPLETED }
+            .map { snapshot -> scoreQuestion(snapshot, todayIso) }
+            .sortedWith(recommendationOrder())
+
     /** Scores a single snapshot into a recommendation. Exposed for focused testing. */
     fun score(
         snapshot: TopicStudySnapshot,
@@ -209,6 +297,41 @@ object StudyPriorityEngine {
         )
     }
 
+    /** Scores a single question snapshot into a PRACTICE recommendation. Exposed for focused testing. */
+    fun scoreQuestion(
+        snapshot: QuestionStudySnapshot,
+        todayIso: String = StudyDateUtils.todayIso()
+    ): StudyRecommendation {
+        val raw = importanceScore(snapshot.importance) +
+            progressGapScore(snapshot.status) +
+            examUrgencyScore(snapshot.daysUntilExam) +
+            questionMarksScore(snapshot.marks)
+        val score = raw.coerceIn(0, MAX_SCORE)
+
+        return StudyRecommendation(
+            topicId = snapshot.linkedTopicId.orEmpty(),
+            subjectId = snapshot.subjectId,
+            unitId = snapshot.unitId,
+            topicName = snapshot.questionText,
+            subjectName = snapshot.subjectName,
+            unitName = snapshot.unitName,
+            iconKey = snapshot.iconKey,
+            status = snapshot.status,
+            importance = snapshot.importance,
+            score = score,
+            level = levelFor(score),
+            action = StudyAction.PRACTICE,
+            reasons = questionReasons(snapshot),
+            estimatedMinutes = questionEstimatedMinutes(snapshot),
+            daysUntilExam = snapshot.daysUntilExam,
+            examDateDisplay = snapshot.examDateDisplay,
+            examName = snapshot.examName,
+            lastRevisedIsoDate = null,
+            revisionCount = 0,
+            questionId = snapshot.questionId
+        )
+    }
+
     /**
      * Selects a realistic Today's Plan: highest-priority topics first, excluding completed topics
      * that have no revision need, capped at [config]'s item count and (when set) an approximate
@@ -224,7 +347,7 @@ object StudyPriorityEngine {
         val candidates = recommendations
             .filter { !(it.status == TopicStatus.COMPLETED && it.action != StudyAction.REVISE) }
             .sortedWith(recommendationOrder())
-            .distinctBy { it.topicId }
+            .distinctBy { it.recommendationKey }
 
         val target = config.dailyMinutesTarget
         if (target == null || target <= 0) return candidates.take(maxItems)
@@ -300,6 +423,55 @@ object StudyPriorityEngine {
         TopicStatus.NOT_STARTED -> StudyAction.STUDY
         TopicStatus.LEARNING -> StudyAction.CONTINUE
         TopicStatus.COMPLETED -> if (revisionSignal > 0) StudyAction.REVISE else StudyAction.CONTINUE
+    }
+
+    /** Maps the persisted question preparation status onto the shared topic-status scale. */
+    private fun questionPrepStatus(status: String): TopicStatus = when (
+        status.uppercase().replace(" ", "_").replace("-", "_")
+    ) {
+        "PREPARED", "COMPLETED", "DONE" -> TopicStatus.COMPLETED
+        "LEARNING", "IN_PROGRESS" -> TopicStatus.LEARNING
+        "HIGH_PRIORITY" -> TopicStatus.NEEDS_REVISION
+        else -> TopicStatus.NOT_STARTED
+    }
+
+    private fun questionMarksScore(marks: Int): Int = marks.coerceIn(0, 10) * 2
+
+    private fun questionEstimatedMinutes(snapshot: QuestionStudySnapshot): Int {
+        val prepBase = when (snapshot.status) {
+            TopicStatus.NOT_STARTED -> 20
+            TopicStatus.LEARNING -> 15
+            TopicStatus.NEEDS_REVISION -> 12
+            TopicStatus.COMPLETED -> 10
+        }
+        return (prepBase + snapshot.marks.coerceIn(0, MAX_QUESTION_MARKS_SIGNAL)).coerceAtLeast(5)
+    }
+
+    private fun questionReasons(snapshot: QuestionStudySnapshot): List<String> {
+        val reasons = mutableListOf<String>()
+
+        when (snapshot.status) {
+            TopicStatus.NOT_STARTED -> reasons += "Not prepared yet"
+            TopicStatus.LEARNING -> reasons += "In progress"
+            TopicStatus.NEEDS_REVISION -> reasons += "Flagged for revision"
+            TopicStatus.COMPLETED -> Unit
+        }
+
+        if (snapshot.importance == Importance.HIGH) reasons += "High importance"
+
+        val days = snapshot.daysUntilExam
+        if (days != null) {
+            val examLabel = snapshot.examName ?: "Exam"
+            reasons += when {
+                days <= 0 -> "$examLabel today"
+                days == 1 -> "$examLabel tomorrow"
+                else -> "$examLabel in $days days"
+            }
+        }
+
+        if (snapshot.marks > 0) reasons += "${snapshot.marks} marks"
+
+        return reasons.distinct()
     }
 
     private fun estimatedMinutes(snapshot: TopicStudySnapshot, revisionSignal: Int): Int {
@@ -382,13 +554,14 @@ object StudyPriorityEngine {
 
     /**
      * Deterministic ordering: score desc, then exam urgency asc (no exam last), then importance
-     * desc, then topic id asc. Guarantees a stable plan regardless of input iteration order.
+     * desc, then recommendation key asc. Guarantees a stable plan regardless of input iteration
+     * order; the key prefix ("topic:"/"question:") keeps topic-only ordering unchanged.
      */
     fun recommendationOrder(): Comparator<StudyRecommendation> =
         compareByDescending<StudyRecommendation> { it.score }
             .thenBy { it.daysUntilExam ?: Int.MAX_VALUE }
             .thenByDescending { it.importance.ordinal }
-            .thenBy { it.topicId }
+            .thenBy { it.recommendationKey }
 
     private fun List<RevisionEvent>.latestRevisionIso(): String? =
         maxOfOrNull { it.revisedAt } ?: firstOrNull()?.revisedAt

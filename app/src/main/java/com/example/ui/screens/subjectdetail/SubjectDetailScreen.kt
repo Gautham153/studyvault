@@ -110,6 +110,7 @@ fun SubjectDetailScreen(
     onNavigateBack: () -> Unit,
     onNavigateToUnitDetail: (String, String) -> Unit,
     modifier: Modifier = Modifier,
+    initialTabIndex: Int = 0,
     viewModel: SubjectDetailViewModel = viewModel()
 ) {
     LaunchedEffect(subjectId) {
@@ -117,7 +118,7 @@ fun SubjectDetailScreen(
     }
 
     val subject by viewModel.subject.collectAsState()
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex) }
     val tabTitles = listOf("Overview", "Materials", "Questions")
 
     Column(

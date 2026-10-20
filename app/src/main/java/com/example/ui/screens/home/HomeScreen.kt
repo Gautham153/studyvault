@@ -73,9 +73,17 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
+internal fun todayPlanEmptyText(isLoading: Boolean, hasSubjects: Boolean, hasError: Boolean): String = when {
+    isLoading && !hasSubjects -> "Loading your plan..."
+    hasError -> "Plan unavailable — see the notice above."
+    !hasSubjects -> "No study data yet — add subjects, topics, or important questions to build your plan."
+    else -> "Your plan is clear — nothing flagged right now."
+}
+
 @Composable
 fun HomeScreen(
     onNavigateToSubjectDetail: (String) -> Unit,
+    onNavigateToSubjectQuestions: (String) -> Unit = {},
     onNavigateToTopicDetail: (String) -> Unit,
     onNavigateToSubjectsTab: () -> Unit,
     onNavigateToStudyTab: () -> Unit,
@@ -221,20 +229,21 @@ fun HomeScreen(
         if (todayPlan.isEmpty()) {
             item {
                 EmptyHint(
-                    text = when {
-                        isLoading && subjects.isEmpty() -> "Loading your plan..."
-                        errorMessage != null -> "Plan unavailable — see the notice above."
-                        else -> "Your plan is clear — nothing flagged right now."
-                    },
+                    text = todayPlanEmptyText(
+                        isLoading = isLoading,
+                        hasSubjects = subjects.isNotEmpty(),
+                        hasError = errorMessage != null
+                    ),
                     modifier = Modifier.testTag("today_plan_empty")
                 )
             }
         }
 
-        items(todayPlan, key = { it.topicId }) { recommendation ->
+        items(todayPlan, key = { it.recommendationKey }) { recommendation ->
             TodayPlanItemCard(
                 recommendation = recommendation,
                 onOpenTopic = { onNavigateToTopicDetail(recommendation.topicId) },
+                onOpenQuestions = { onNavigateToSubjectQuestions(recommendation.subjectId) },
                 onStart = { viewModel.startTopic(recommendation.topicId) },
                 onComplete = { viewModel.completeTopic(recommendation.topicId) },
                 onRevise = { viewModel.reviseTopic(recommendation.topicId) }
@@ -349,15 +358,20 @@ fun HomeScreen(
 private fun TodayPlanItemCard(
     recommendation: StudyRecommendation,
     onOpenTopic: () -> Unit,
+    onOpenQuestions: () -> Unit,
     onStart: () -> Unit,
     onComplete: () -> Unit,
     onRevise: () -> Unit
 ) {
+    val isQuestion = recommendation.isQuestion
     CardWithSubtleBorder(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("today_plan_card_${recommendation.topicId}"),
-        onClick = onOpenTopic
+            .testTag(
+                if (isQuestion) "today_plan_card_q_${recommendation.questionId}"
+                else "today_plan_card_${recommendation.topicId}"
+            ),
+        onClick = if (isQuestion) onOpenQuestions else onOpenTopic
     ) {
         Column(
             modifier = Modifier
@@ -410,11 +424,13 @@ private fun TodayPlanItemCard(
                     StudyAction.STUDY -> "Start"
                     StudyAction.CONTINUE -> "Continue"
                     StudyAction.REVISE -> "Revise"
+                    StudyAction.PRACTICE -> "Practice"
                 }
                 val primaryAction = when (recommendation.action) {
                     StudyAction.STUDY -> onStart
                     StudyAction.CONTINUE -> onOpenTopic
                     StudyAction.REVISE -> onRevise
+                    StudyAction.PRACTICE -> onOpenQuestions
                 }
                 Button(
                     onClick = primaryAction,
@@ -422,12 +438,15 @@ private fun TodayPlanItemCard(
                         containerColor = PrimaryBlueLight,
                         contentColor = Color.White
                     ),
-                    modifier = Modifier.testTag("today_plan_primary_${recommendation.topicId}")
+                    modifier = Modifier.testTag(
+                        if (isQuestion) "today_plan_primary_q_${recommendation.questionId}"
+                        else "today_plan_primary_${recommendation.topicId}"
+                    )
                 ) {
                     Text(text = primaryLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
 
-                if (recommendation.status != TopicStatus.COMPLETED) {
+                if (!isQuestion && recommendation.status != TopicStatus.COMPLETED) {
                     OutlinedButton(
                         onClick = onComplete,
                         modifier = Modifier.testTag("today_plan_done_${recommendation.topicId}")

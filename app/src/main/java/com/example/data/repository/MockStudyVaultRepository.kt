@@ -359,7 +359,7 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     }
 
     override fun getTodayStudyItems(): List<StudyItem> =
-        _todayStudyPlan.value.map { StudyPlanning.recommendationToStudyItem(it) }
+        _todayStudyPlan.value.filter { !it.isQuestion }.map { StudyPlanning.recommendationToStudyItem(it) }
 
     override fun setDailyStudyMinutesTarget(minutes: Int?) {
         dailyMinutesTarget = minutes?.takeIf { it > 0 }
@@ -649,8 +649,13 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
             todayIso = todayIso
         )
         _studyRecommendations.value = recommendations
+        val questionRecommendations = StudyPriorityEngine.buildQuestionRecommendations(
+            subjects = subjects,
+            upcomingExams = _upcomingExams.value,
+            todayIso = todayIso
+        )
         _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
-            recommendations = recommendations,
+            recommendations = recommendations + questionRecommendations,
             config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
         )
     }
@@ -764,6 +769,12 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
             updatedAt = "Today"
         )
         mutableQuestions.add(newQ)
+        _subjects.update { subjects ->
+            subjects.map { subject ->
+                if (subject.id == subjectId) subject.copy(questions = subject.questions + newQ) else subject
+            }
+        }
+        recomputeRecommendations()
         return Result.success(newQ)
     }
 
@@ -773,12 +784,34 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
             return Result.failure(NoSuchElementException("Question not found."))
         }
         mutableQuestions[idx] = question
+        _subjects.update { subjects ->
+            subjects.map { subject ->
+                if (subject.id == question.subjectId) {
+                    subject.copy(
+                        questions = subject.questions.map { existing ->
+                            if (existing.id == question.id) question else existing
+                        }
+                    )
+                } else subject
+            }
+        }
+        recomputeRecommendations()
         return Result.success(question)
     }
 
     override suspend fun deleteQuestion(questionId: String): Result<Unit> {
-        val removed = mutableQuestions.removeAll { it.id == questionId }
-        return if (removed) Result.success(Unit) else Result.failure(NoSuchElementException("Question not found."))
+        val existing = mutableQuestions.find { it.id == questionId }
+            ?: return Result.failure(NoSuchElementException("Question not found."))
+        mutableQuestions.removeAll { it.id == questionId }
+        _subjects.update { subjects ->
+            subjects.map { subject ->
+                if (subject.id == existing.subjectId) {
+                    subject.copy(questions = subject.questions.filterNot { it.id == questionId })
+                } else subject
+            }
+        }
+        recomputeRecommendations()
+        return Result.success(Unit)
     }
 
     override suspend fun getNotesForSubject(subjectId: String): List<NoteItem> {

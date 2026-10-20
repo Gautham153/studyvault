@@ -606,7 +606,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     // --- StudyVaultRepository Interface Implementation ---
 
     override fun getTodayStudyItems(): List<StudyItem> =
-        _todayStudyPlan.value.map { StudyPlanning.recommendationToStudyItem(it) }
+        _todayStudyPlan.value.filter { !it.isQuestion }.map { StudyPlanning.recommendationToStudyItem(it) }
 
     override fun setDailyStudyMinutesTarget(minutes: Int?) {
         dailyMinutesTarget = minutes?.takeIf { it > 0 }
@@ -871,15 +871,21 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     }
 
     private fun recomputeRecommendations(subjects: List<Subject> = _subjects.value) {
+        val todayIso = StudyDateUtils.todayIso()
         val recommendations = StudyPriorityEngine.buildRecommendations(
             subjects = subjects,
             upcomingExams = _upcomingExams.value,
             revisionEventsByTopic = currentRevisionEvents().groupBy { it.topicId },
-            todayIso = StudyDateUtils.todayIso()
+            todayIso = todayIso
         )
         _studyRecommendations.value = recommendations
+        val questionRecommendations = StudyPriorityEngine.buildQuestionRecommendations(
+            subjects = subjects,
+            upcomingExams = _upcomingExams.value,
+            todayIso = todayIso
+        )
         _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
-            recommendations = recommendations,
+            recommendations = recommendations + questionRecommendations,
             config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
         )
     }
@@ -1327,6 +1333,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
+                recomputeRecommendations(domainSubjects)
 
                 val subject = domainSubjects.find { it.id == subjectId }
                 val unitName = allUnits.find { it.id == unitId }?.name ?: "General"
@@ -1414,6 +1421,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
+                recomputeRecommendations(domainSubjects)
 
                 Result.success(question.copy(updatedAt = nowStr))
             } catch (e: Exception) {
@@ -1459,6 +1467,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                     revisionDtos = allRevisionHistory
                 )
                 _subjects.value = domainSubjects
+                recomputeRecommendations(domainSubjects)
 
                 Log.i(TAG, "Successfully deleted question $questionId")
                 Result.success(Unit)

@@ -115,6 +115,9 @@ fun StudyVaultNavHost(
                 onNavigateToSubjectDetail = { subjectId ->
                     navController.navigate(Screen.SubjectDetail.createRoute(subjectId))
                 },
+                onNavigateToSubjectQuestions = { subjectId ->
+                    navController.navigate(Screen.SubjectQuestions.createRoute(subjectId))
+                },
                 onNavigateToTopicDetail = { topicId ->
                     navController.navigate(Screen.TopicDetail.createRoute(topicId))
                 },
@@ -135,6 +138,21 @@ fun StudyVaultNavHost(
                 onNavigateToUnitDetail = { subId, unitId ->
                     navController.navigate(Screen.UnitDetail.createRoute(subId, unitId))
                 }
+            )
+        }
+
+        composable(
+            route = Screen.SubjectQuestions.route,
+            arguments = listOf(navArgument("subjectId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val subjectId = backStackEntry.arguments?.getString("subjectId") ?: ""
+            SubjectDetailScreen(
+                subjectId = subjectId,
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToUnitDetail = { subId, unitId ->
+                    navController.navigate(Screen.UnitDetail.createRoute(subId, unitId))
+                },
+                initialTabIndex = 2
             )
         }
 
