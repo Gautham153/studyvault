@@ -53,7 +53,7 @@ class TodayPlanQuestionRecommendationsTest {
     }
 
     @Test
-    fun `medium and low importance questions are never recommended`() {
+    fun `medium and low importance questions are eligible with high importance scoring first`() {
         val subject = subjectWith(
             question("q_med", importance = Importance.MEDIUM, status = "Not Prepared"),
             question("q_low", importance = Importance.LOW, status = "Not Prepared"),
@@ -62,7 +62,59 @@ class TodayPlanQuestionRecommendationsTest {
 
         val recs = StudyPriorityEngine.buildQuestionRecommendations(listOf(subject), emptyList(), TODAY)
 
-        assertEquals(listOf("q_high"), recs.map { it.questionId })
+        assertEquals(listOf("q_high", "q_med", "q_low"), recs.map { it.questionId })
+    }
+
+    @Test
+    fun `medium importance not prepared question with no exam is still eligible`() {
+        val subject = subjectWith(
+            question("q_med", importance = Importance.MEDIUM, status = "Not Prepared", marks = 3)
+        )
+
+        val rec = StudyPriorityEngine.buildQuestionRecommendations(listOf(subject), emptyList(), TODAY).single()
+
+        assertEquals("q_med", rec.questionId)
+        assertEquals(15 + 25 + 0 + 6, rec.score)
+    }
+
+    @Test
+    fun `medium importance question with an upcoming exam outscores one without an exam`() {
+        val withExam = Subject(
+            id = "s1",
+            name = "Subject s1",
+            code = "C1",
+            iconKey = "book",
+            preparationPercent = 0,
+            unitsCount = 1,
+            topicsCount = 0,
+            units = listOf(UnitModel("s1_u1", "s1", 1, "Unit 1", 0)),
+            questions = listOf(question("q_near", importance = Importance.MEDIUM, status = "Not Prepared"))
+        )
+        val withoutExam = Subject(
+            id = "s2",
+            name = "Subject s2",
+            code = "C2",
+            iconKey = "book",
+            preparationPercent = 0,
+            unitsCount = 1,
+            topicsCount = 0,
+            units = listOf(UnitModel("s2_u1", "s2", 1, "Unit 1", 0)),
+            questions = listOf(
+                question("q_far", importance = Importance.MEDIUM, status = "Not Prepared").copy(subjectId = "s2")
+            )
+        )
+        val exam = examItem("e1", "s1", iso = isoPlusDays(TODAY, 3))
+
+        val recs = StudyPriorityEngine.buildQuestionRecommendations(
+            listOf(withExam, withoutExam),
+            listOf(exam),
+            TODAY
+        )
+
+        assertEquals(listOf("q_near", "q_far"), recs.map { it.questionId })
+        val near = recs.first { it.questionId == "q_near" }
+        val far = recs.first { it.questionId == "q_far" }
+        assertTrue("Exam urgency must boost the medium-importance question", near.score > far.score)
     }
 
     @Test
@@ -251,7 +303,14 @@ class TodayPlanQuestionRecommendationsTest {
             repository.getTodayStudyItems().none { it.topicId.isBlank() })
 
         repository.updateQuestion(added.copy(importance = Importance.MEDIUM))
-        assertTrue(repository.todayStudyPlan.value.none { it.isQuestion })
+        assertEquals(
+            "MEDIUM-importance questions stay eligible while unprepared",
+            added.id,
+            repository.todayStudyPlan.value.single { it.isQuestion }.questionId
+        )
+
+        repository.updateQuestion(added.copy(status = "Prepared"))
+        assertTrue("Prepared questions drop out of the plan", repository.todayStudyPlan.value.none { it.isQuestion })
 
         val reAdded = repository.addQuestion(
             subjectId = "s_java",

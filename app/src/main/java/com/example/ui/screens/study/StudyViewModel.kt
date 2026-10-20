@@ -34,18 +34,18 @@ class StudyViewModel(
 
     val studyItems: StateFlow<List<StudyItem>> = combine(
         _selectedFilter,
-        repository.studyRecommendations,
+        repository.allStudyRecommendations,
         repository.subjects,
         repository.recentRevisions
-    ) { filter, recommendations, subjects, recentRevisions ->
+    ) { filter, allRecommendations, subjects, recentRevisions ->
         val revisionsByTopic = recentRevisions.groupBy { it.topicId }
         when (filter) {
-            StudyFilter.PRIORITY -> recommendations
+            StudyFilter.PRIORITY -> allRecommendations
                 .filter { it.status != TopicStatus.COMPLETED || it.action == StudyAction.REVISE }
                 .map { StudyPlanning.recommendationToStudyItem(it) }
-            StudyFilter.ALL -> recommendations
+            StudyFilter.ALL -> allRecommendations
                 .map { StudyPlanning.recommendationToStudyItem(it) }
-            StudyFilter.NEEDS_REVISION -> recommendations
+            StudyFilter.NEEDS_REVISION -> allRecommendations
                 .filter { it.status == TopicStatus.NEEDS_REVISION || it.action == StudyAction.REVISE }
                 .map { StudyPlanning.recommendationToStudyItem(it) }
             StudyFilter.RECENTLY_REVISED -> StudyPlanning.buildRevisionStudyItems(subjects, revisionsByTopic)

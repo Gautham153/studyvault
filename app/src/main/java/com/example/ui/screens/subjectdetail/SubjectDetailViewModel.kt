@@ -37,6 +37,9 @@ class SubjectDetailViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _unitActionMessage = MutableStateFlow<String?>(null)
+    val unitActionMessage: StateFlow<String?> = _unitActionMessage.asStateFlow()
+
     // Real study materials for this subject, sourced exclusively from the material repository.
     // No cached fallback: after a successful load an empty repository list stays empty, so
     // deleted files can never be resurrected from stale embedded subject data.
@@ -148,5 +151,57 @@ class SubjectDetailViewModel(
     fun clearMessages() {
         _errorMessage.value = null
         _statusMessage.value = null
+    }
+
+    fun clearUnitActionMessage() {
+        _unitActionMessage.value = null
+    }
+
+    fun createUnit(name: String, orderIndex: Int?) {
+        val sId = currentSubjectId ?: return
+        viewModelScope.launch {
+            val result = repository.createUnit(sId, name, orderIndex)
+            result.fold(
+                onSuccess = { unit ->
+                    _unitActionMessage.value = "Added ${unit.title}"
+                    _subject.value = repository.getSubjectById(sId)
+                },
+                onFailure = { error ->
+                    _unitActionMessage.value = error.message ?: "Failed to create unit."
+                }
+            )
+        }
+    }
+
+    fun updateUnit(unitId: String, name: String, orderIndex: Int?) {
+        val sId = currentSubjectId ?: return
+        viewModelScope.launch {
+            val result = repository.updateUnit(sId, unitId, name, orderIndex)
+            result.fold(
+                onSuccess = { unit ->
+                    _unitActionMessage.value = "Updated ${unit.title}"
+                    _subject.value = repository.getSubjectById(sId)
+                },
+                onFailure = { error ->
+                    _unitActionMessage.value = error.message ?: "Failed to update unit."
+                }
+            )
+        }
+    }
+
+    fun deleteUnit(unitId: String) {
+        val sId = currentSubjectId ?: return
+        viewModelScope.launch {
+            val result = repository.deleteUnit(sId, unitId)
+            result.fold(
+                onSuccess = {
+                    _unitActionMessage.value = "Unit deleted"
+                    _subject.value = repository.getSubjectById(sId)
+                },
+                onFailure = { error ->
+                    _unitActionMessage.value = error.message ?: "Failed to delete unit."
+                }
+            )
+        }
     }
 }

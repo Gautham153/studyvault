@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -56,6 +58,7 @@ import com.example.ui.theme.BackgroundNavy
 import com.example.ui.theme.BorderSubtle
 import com.example.ui.theme.PrimaryBlue
 import com.example.ui.theme.PrimaryBlueLight
+import com.example.ui.theme.StatusAmber
 import com.example.ui.theme.SurfaceDark
 import com.example.ui.theme.SurfaceElevated
 import com.example.ui.theme.TextMuted
@@ -71,12 +74,22 @@ fun SubjectsScreen(
     val subjects by viewModel.subjects.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val actionMessage by viewModel.actionMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingSubject by remember { mutableStateOf<Subject?>(null) }
+    var deletingSubject by remember { mutableStateOf<Subject?>(null) }
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let { msg ->
             snackbarHostState.showSnackbar(msg)
+        }
+    }
+
+    LaunchedEffect(actionMessage) {
+        actionMessage?.let { msg ->
+            snackbarHostState.showSnackbar(msg)
+            viewModel.clearActionMessage()
         }
     }
 
@@ -164,7 +177,9 @@ fun SubjectsScreen(
             items(filteredSubjects, key = { it.id }) { subject ->
                 SubjectGridCard(
                     subject = subject,
-                    onClick = { onNavigateToSubjectDetail(subject.id) }
+                    onClick = { onNavigateToSubjectDetail(subject.id) },
+                    onEdit = { editingSubject = subject },
+                    onDelete = { deletingSubject = subject }
                 )
             }
         }
@@ -179,13 +194,37 @@ fun SubjectsScreen(
             }
         )
     }
+
+    editingSubject?.let { subject ->
+        EditSubjectDialog(
+            subject = subject,
+            onDismiss = { editingSubject = null },
+            onSave = { name, code ->
+                viewModel.updateSubject(subject.id, name, code, subject.iconKey)
+                editingSubject = null
+            }
+        )
+    }
+
+    deletingSubject?.let { subject ->
+        DeleteSubjectDialog(
+            subject = subject,
+            onDismiss = { deletingSubject = null },
+            onConfirm = {
+                viewModel.deleteSubject(subject.id)
+                deletingSubject = null
+            }
+        )
+    }
     }
 }
 
 @Composable
 private fun SubjectGridCard(
     subject: Subject,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
     CardWithSubtleBorder(
         modifier = Modifier
@@ -198,10 +237,44 @@ private fun SubjectGridCard(
                 .fillMaxWidth()
                 .padding(14.dp)
         ) {
-            SubjectIconBadge(
-                iconKey = subject.iconKey,
-                size = 40.dp
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                SubjectIconBadge(
+                    iconKey = subject.iconKey,
+                    size = 40.dp
+                )
+                Row {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("subject_edit_${subject.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit ${subject.name}",
+                            tint = TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("subject_delete_${subject.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete ${subject.name}",
+                            tint = StatusAmber,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -302,6 +375,122 @@ private fun AddSubjectDialog(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("Add Subject")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        },
+        containerColor = SurfaceDark,
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+
+@Composable
+private fun EditSubjectDialog(
+    subject: Subject,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit
+) {
+    var name by remember(subject.id) { mutableStateOf(subject.name) }
+    var code by remember(subject.id) { mutableStateOf(subject.code) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Edit Subject",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Subject Name") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark,
+                        focusedBorderColor = PrimaryBlueLight,
+                        unfocusedBorderColor = BorderSubtle,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Course Code") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark,
+                        focusedBorderColor = PrimaryBlueLight,
+                        unfocusedBorderColor = BorderSubtle,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(name, code) },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        },
+        containerColor = SurfaceDark,
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+
+@Composable
+private fun DeleteSubjectDialog(
+    subject: Subject,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Delete ${subject.name}?",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Text(
+                text = "This removes the subject together with its units, topics, questions, " +
+                    "notes, exams, and study materials. This action cannot be undone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = StatusAmber),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("confirm_delete_subject_${subject.id}")
+            ) {
+                Text("Delete Subject")
             }
         },
         dismissButton = {

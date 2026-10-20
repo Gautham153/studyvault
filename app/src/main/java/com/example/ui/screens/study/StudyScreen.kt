@@ -59,6 +59,7 @@ import com.example.ui.theme.TextSecondary
 fun StudyScreen(
     onNavigateToTopicDetail: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onNavigateToSubjectQuestions: (String) -> Unit = {},
     viewModel: StudyViewModel = viewModel()
 ) {
     val items by viewModel.studyItems.collectAsState()
@@ -70,7 +71,6 @@ fun StudyScreen(
             .fillMaxSize()
             .background(BackgroundNavy)
             .padding(horizontal = 16.dp)
-            .testTag("study_screen")
     ) {
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -126,7 +126,9 @@ fun StudyScreen(
 
         // Priority Items List
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("study_screen"),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
@@ -143,10 +145,16 @@ fun StudyScreen(
                     )
                 }
             }
-            items(items, key = { it.topicId }) { item ->
+            items(items, key = { it.cardKey }) { item ->
                 StudyPriorityCard(
                     item = item,
-                    onClick = { onNavigateToTopicDetail(item.topicId) }
+                    onClick = {
+                        if (item.isQuestion) {
+                            onNavigateToSubjectQuestions(item.subjectId)
+                        } else {
+                            onNavigateToTopicDetail(item.topicId)
+                        }
+                    }
                 )
             }
         }
@@ -154,9 +162,9 @@ fun StudyScreen(
 }
 
 private fun emptyStateMessage(filter: StudyFilter): String = when (filter) {
-    StudyFilter.PRIORITY -> "Nothing to study right now. Every topic is completed."
-    StudyFilter.ALL -> "No topics yet. Add a subject with units and topics to get started."
-    StudyFilter.NEEDS_REVISION -> "No topics are flagged for revision."
+    StudyFilter.PRIORITY -> "Nothing to study right now. Every topic is completed and no questions need preparation."
+    StudyFilter.ALL -> "No topics or questions yet. Add a subject with content to get started."
+    StudyFilter.NEEDS_REVISION -> "No topics or questions are flagged for revision."
     StudyFilter.RECENTLY_REVISED -> "No revisions recorded yet. Mark a topic as revised to see it here."
 }
 
@@ -168,7 +176,13 @@ private fun StudyPriorityCard(
     CardWithSubtleBorder(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("study_item_card_${item.topicId}"),
+            .testTag(
+                if (item.isQuestion) {
+                    "study_item_card_q_${item.questionId}"
+                } else {
+                    "study_item_card_${item.topicId}"
+                }
+            ),
         onClick = onClick
     ) {
         Row(
@@ -212,7 +226,11 @@ private fun StudyPriorityCard(
                         TopicStatus.NOT_STARTED -> TextMuted
                     }
                     Text(
-                        text = item.topicStatus.displayLabel,
+                        text = if (item.isQuestion) {
+                            "${item.topicStatus.displayLabel} • Practice"
+                        } else {
+                            item.topicStatus.displayLabel
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = badgeColor,
                         fontWeight = FontWeight.SemiBold,
@@ -232,7 +250,7 @@ private fun StudyPriorityCard(
 
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                contentDescription = "Open topic",
+                contentDescription = if (item.isQuestion) "Open questions" else "Open topic",
                 tint = TextMuted,
                 modifier = Modifier.size(14.dp)
             )

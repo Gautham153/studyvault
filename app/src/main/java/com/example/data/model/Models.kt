@@ -205,8 +205,16 @@ data class StudyItem(
     val topicStatus: TopicStatus = TopicStatus.NOT_STARTED,
     val revisionCount: Int = 0,
     val lastRevisedAt: String? = null,
-    val iconKey: String = "book"
-)
+    val iconKey: String = "book",
+    val questionId: String? = null
+) {
+    val isQuestion: Boolean
+        get() = questionId != null
+
+    /** Stable list key that never collides between a question and its linked topic. */
+    val cardKey: String
+        get() = if (questionId != null) "question:$questionId" else "topic:$topicId"
+}
 
 data class RevisionEvent(
     val id: String,

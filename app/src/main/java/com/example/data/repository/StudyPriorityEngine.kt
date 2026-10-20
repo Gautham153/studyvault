@@ -242,9 +242,10 @@ object StudyPriorityEngine {
 
     /**
      * Recommendations for important questions that still need preparation. A question is eligible
-     * when its importance is HIGH and its mapped preparation status is not COMPLETED; questions
-     * whose importance is only MEDIUM or LOW never surface, so seeded/mock data without explicit
-     * HIGH-importance questions leaves the plan unchanged.
+     * when its mapped preparation status is not COMPLETED; importance, preparation state, marks,
+     * and exam urgency are combined into the score, so HIGH-importance and near-exam questions
+     * surface first while MEDIUM-importance questions that need preparation are also eligible
+     * when their combined score warrants it. Prepared questions never surface.
      */
     fun buildQuestionRecommendations(
         subjects: List<Subject>,
@@ -258,7 +259,7 @@ object StudyPriorityEngine {
         todayIso: String = StudyDateUtils.todayIso()
     ): List<StudyRecommendation> =
         snapshots
-            .filter { it.importance == Importance.HIGH && it.status != TopicStatus.COMPLETED }
+            .filter { it.status != TopicStatus.COMPLETED }
             .map { snapshot -> scoreQuestion(snapshot, todayIso) }
             .sortedWith(recommendationOrder())
 

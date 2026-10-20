@@ -135,7 +135,8 @@ object StudyPlanning {
         topicStatus = recommendation.status,
         revisionCount = recommendation.revisionCount,
         lastRevisedAt = recommendation.lastRevisedIsoDate,
-        iconKey = recommendation.iconKey
+        iconKey = recommendation.iconKey,
+        questionId = recommendation.questionId
     )
 
     /** Study items for topics that have at least one recorded revision, newest revision first. */

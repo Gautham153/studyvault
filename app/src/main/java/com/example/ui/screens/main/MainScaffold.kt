@@ -153,7 +153,8 @@ fun MainScaffold(
                     onNavigateToSubjectDetail = onNavigateToSubjectDetail
                 )
                 2 -> StudyScreen(
-                    onNavigateToTopicDetail = onNavigateToTopicDetail
+                    onNavigateToTopicDetail = onNavigateToTopicDetail,
+                    onNavigateToSubjectQuestions = onNavigateToSubjectQuestions
                 )
                 3 -> ExamsScreen(
                     onNavigateToSubjectDetail = onNavigateToSubjectDetail

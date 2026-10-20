@@ -118,6 +118,7 @@ fun SubjectDetailScreen(
     }
 
     val subject by viewModel.subject.collectAsState()
+    val unitActionMessage by viewModel.unitActionMessage.collectAsState()
     var selectedTabIndex by remember { mutableIntStateOf(initialTabIndex) }
     val tabTitles = listOf("Overview", "Materials", "Questions")
 
@@ -211,7 +212,12 @@ fun SubjectDetailScreen(
                     questionsCount = questionsState.questions.size,
                     onNavigateToUnit = { unitId -> onNavigateToUnitDetail(sub.id, unitId) },
                     onSelectMaterialsTab = { selectedTabIndex = 1 },
-                    onSelectQuestionsTab = { selectedTabIndex = 2 }
+                    onSelectQuestionsTab = { selectedTabIndex = 2 },
+                    onCreateUnit = viewModel::createUnit,
+                    onRenameUnit = { unit, name, order -> viewModel.updateUnit(unit.id, name, order) },
+                    onDeleteUnit = { unit -> viewModel.deleteUnit(unit.id) },
+                    unitActionMessage = unitActionMessage,
+                    onClearUnitActionMessage = viewModel::clearUnitActionMessage
                 )
                 1 -> SubjectMaterialsTab(subject = sub, viewModel = viewModel)
                 2 -> SubjectQuestionsTab(subject = sub, viewModel = questionsViewModel)
@@ -270,8 +276,17 @@ private fun SubjectOverviewTab(
     questionsCount: Int,
     onNavigateToUnit: (String) -> Unit,
     onSelectMaterialsTab: () -> Unit,
-    onSelectQuestionsTab: () -> Unit
+    onSelectQuestionsTab: () -> Unit,
+    onCreateUnit: (String, Int?) -> Unit,
+    onRenameUnit: (UnitModel, String, Int?) -> Unit,
+    onDeleteUnit: (UnitModel) -> Unit,
+    unitActionMessage: String?,
+    onClearUnitActionMessage: () -> Unit
 ) {
+    var showAddUnitDialog by remember { mutableStateOf(false) }
+    var unitToRename by remember { mutableStateOf<UnitModel?>(null) }
+    var unitToDelete by remember { mutableStateOf<UnitModel?>(null) }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -280,15 +295,74 @@ private fun SubjectOverviewTab(
     ) {
         item {
             Spacer(modifier = Modifier.height(8.dp))
-            SectionHeader(title = "Unit Progress")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionHeader(title = "Unit Progress")
+                TextButton(
+                    onClick = { showAddUnitDialog = true },
+                    modifier = Modifier.testTag("add_unit_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        tint = PrimaryBlueLight,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Unit", color = PrimaryBlueLight)
+                }
+            }
+        }
+
+        unitActionMessage?.let { msg ->
+            item {
+                CardWithSubtleBorder(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onClearUnitActionMessage() }
+                        .testTag("unit_action_banner"),
+                    backgroundColor = SurfaceDark,
+                    borderColor = if (msg.contains("Failed", ignoreCase = true) ||
+                        msg.contains("still has", ignoreCase = true)
+                    ) StatusRed else StatusGreen
+                ) {
+                    Text(
+                        text = msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (msg.contains("Failed", ignoreCase = true) ||
+                            msg.contains("still has", ignoreCase = true)
+                        ) StatusRed else StatusGreen,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
         }
 
         // List of Units
-        items(subject.units) { unit ->
+        items(subject.units, key = { it.id }) { unit ->
             UnitProgressRow(
                 unit = unit,
-                onClick = { onNavigateToUnit(unit.id) }
+                onClick = { onNavigateToUnit(unit.id) },
+                onEdit = { unitToRename = unit },
+                onDelete = { unitToDelete = unit }
             )
+        }
+
+        if (subject.units.isEmpty()) {
+            item {
+                Text(
+                    text = "No units yet. Tap \"Add Unit\" to create the first unit for this subject.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .testTag("empty_units_message")
+                )
+            }
         }
 
         // Needs Attention Card
@@ -378,12 +452,153 @@ private fun SubjectOverviewTab(
             Spacer(modifier = Modifier.height(20.dp))
         }
     }
+
+    if (showAddUnitDialog) {
+        UnitNameDialog(
+            title = "Add Unit",
+            initialName = "",
+            initialOrder = (subject.units.maxOfOrNull { it.unitNumber } ?: 0) + 1,
+            confirmLabel = "Add Unit",
+            onDismiss = { showAddUnitDialog = false },
+            onConfirm = { name, order ->
+                onCreateUnit(name, order)
+                showAddUnitDialog = false
+            }
+        )
+    }
+
+    unitToRename?.let { unit ->
+        UnitNameDialog(
+            title = "Rename Unit",
+            initialName = unit.title,
+            initialOrder = unit.unitNumber,
+            confirmLabel = "Save",
+            onDismiss = { unitToRename = null },
+            onConfirm = { name, order ->
+                onRenameUnit(unit, name, order)
+                unitToRename = null
+            }
+        )
+    }
+
+    unitToDelete?.let { unit ->
+        AlertDialog(
+            onDismissRequest = { unitToDelete = null },
+            title = {
+                Text(
+                    text = "Delete ${unit.title}?",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "A unit can only be deleted when it has no topics or questions. " +
+                        "Linked study materials keep their file but lose the unit link.",
+                    color = TextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteUnit(unit)
+                        unitToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusRed),
+                    modifier = Modifier.testTag("confirm_delete_unit_${unit.id}")
+                ) {
+                    Text("Delete", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { unitToDelete = null }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            },
+            containerColor = SurfaceDark
+        )
+    }
+}
+
+@Composable
+private fun UnitNameDialog(
+    title: String,
+    initialName: String,
+    initialOrder: Int?,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, Int?) -> Unit
+) {
+    var name by remember(initialName) { mutableStateOf(initialName) }
+    var orderText by remember(initialOrder) { mutableStateOf(initialOrder?.toString() ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Unit Name") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark,
+                        focusedBorderColor = PrimaryBlueLight,
+                        unfocusedBorderColor = BorderSubtle,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+                OutlinedTextField(
+                    value = orderText,
+                    onValueChange = { orderText = it.filter { c -> c.isDigit() } },
+                    label = { Text("Order (optional)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = SurfaceDark,
+                        unfocusedContainerColor = SurfaceDark,
+                        focusedBorderColor = PrimaryBlueLight,
+                        unfocusedBorderColor = BorderSubtle,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name, orderText.toIntOrNull()) },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        },
+        containerColor = SurfaceDark,
+        shape = RoundedCornerShape(16.dp)
+    )
 }
 
 @Composable
 private fun UnitProgressRow(
     unit: UnitModel,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
     CardWithSubtleBorder(
         modifier = Modifier
@@ -407,12 +622,40 @@ private fun UnitProgressRow(
                     color = TextPrimary,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "${unit.preparationPercent}%",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (unit.preparationPercent == 100) StatusGreen else TextPrimary,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${unit.preparationPercent}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (unit.preparationPercent == 100) StatusGreen else TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("unit_edit_${unit.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Rename unit",
+                            tint = TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("unit_delete_${unit.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Delete unit",
+                            tint = TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(6.dp))

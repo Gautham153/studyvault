@@ -22,6 +22,7 @@ interface StudyVaultRepository {
     val recentRevisions: StateFlow<List<RevisionEvent>>
     val priorityStudyItems: StateFlow<List<StudyItem>>
     val studyRecommendations: StateFlow<List<StudyRecommendation>>
+    val allStudyRecommendations: StateFlow<List<StudyRecommendation>>
     val todayStudyPlan: StateFlow<List<StudyRecommendation>>
     val isLoading: StateFlow<Boolean>
     val errorMessage: StateFlow<String?>
@@ -35,6 +36,14 @@ interface StudyVaultRepository {
     fun getExamById(examId: String): ExamItem?
     fun getRevisionEventsForTopic(topicId: String): List<RevisionEvent>
     fun addSubject(subjectName: String, code: String, iconKey: String)
+    suspend fun updateSubject(subjectId: String, subjectName: String, code: String, iconKey: String): Result<Subject>
+    suspend fun deleteSubject(subjectId: String): Result<Unit>
+
+    // Unit management
+    suspend fun createUnit(subjectId: String, name: String, orderIndex: Int? = null): Result<UnitModel>
+    suspend fun updateUnit(subjectId: String, unitId: String, name: String, orderIndex: Int? = null): Result<UnitModel>
+    suspend fun deleteUnit(subjectId: String, unitId: String): Result<Unit>
+
     fun setAuthenticatedUser(email: String, displayName: String)
     fun clearData()
 

@@ -316,6 +316,9 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     private val _studyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
     override val studyRecommendations: StateFlow<List<StudyRecommendation>> = _studyRecommendations.asStateFlow()
 
+    private val _allStudyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val allStudyRecommendations: StateFlow<List<StudyRecommendation>> = _allStudyRecommendations.asStateFlow()
+
     private val _todayStudyPlan = MutableStateFlow<List<StudyRecommendation>>(emptyList())
     override val todayStudyPlan: StateFlow<List<StudyRecommendation>> = _todayStudyPlan.asStateFlow()
 
@@ -654,8 +657,11 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
             upcomingExams = _upcomingExams.value,
             todayIso = todayIso
         )
+        val allRecommendations = (recommendations + questionRecommendations)
+            .sortedWith(StudyPriorityEngine.recommendationOrder())
+        _allStudyRecommendations.value = allRecommendations
         _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
-            recommendations = recommendations + questionRecommendations,
+            recommendations = allRecommendations,
             config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
         )
     }
@@ -678,6 +684,131 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         )
         _subjects.update { it + newSub }
         recalculateDerivedState()
+    }
+
+    override suspend fun updateSubject(
+        subjectId: String,
+        subjectName: String,
+        code: String,
+        iconKey: String
+    ): Result<Subject> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        val trimmedName = subjectName.trim()
+        if (trimmedName.isBlank()) {
+            return Result.failure(IllegalArgumentException("Subject name cannot be blank."))
+        }
+        val updated = subject.copy(
+            name = trimmedName,
+            code = code.trim().ifBlank { subject.code },
+            iconKey = iconKey.ifBlank { subject.iconKey }
+        )
+        _subjects.update { subjects -> subjects.map { if (it.id == subject.id) updated else it } }
+        recalculateDerivedState()
+        return Result.success(updated)
+    }
+
+    override suspend fun deleteSubject(subjectId: String): Result<Unit> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        val topicIds = subject.units.flatMap { unit -> unit.topics.map { it.id } }.toSet()
+        mutableQuestions.removeAll { it.subjectId == subject.id }
+        mutableNotes.removeAll { it.subjectId == subject.id }
+        mutableExams.removeAll { it.subjectId == subject.id }
+        mutableRevisionEvents.removeAll { it.topicId in topicIds || it.subjectId == subject.id }
+        _subjects.update { subjects -> subjects.filterNot { it.id == subject.id } }
+        recalculateDerivedState()
+        return Result.success(Unit)
+    }
+
+    override suspend fun createUnit(subjectId: String, name: String, orderIndex: Int?): Result<UnitModel> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            return Result.failure(IllegalArgumentException("Unit name cannot be blank."))
+        }
+        val newUnit = UnitModel(
+            id = "u_${System.currentTimeMillis()}",
+            subjectId = subject.id,
+            unitNumber = orderIndex ?: ((subject.units.maxOfOrNull { it.unitNumber } ?: 0) + 1),
+            title = trimmed,
+            preparationPercent = 0,
+            topics = emptyList(),
+            materialsCount = 0,
+            questionsCount = 0
+        )
+        _subjects.update { subjects ->
+            subjects.map { s ->
+                if (s.id != subject.id) s
+                else s.copy(
+                    units = (s.units + newUnit).sortedBy { it.unitNumber },
+                    unitsCount = s.units.size + 1
+                )
+            }
+        }
+        recalculateDerivedState()
+        return Result.success(newUnit)
+    }
+
+    override suspend fun updateUnit(
+        subjectId: String,
+        unitId: String,
+        name: String,
+        orderIndex: Int?
+    ): Result<UnitModel> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        val unit = subject.units.find { it.id == unitId }
+            ?: return Result.failure(NoSuchElementException("Unit not found."))
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            return Result.failure(IllegalArgumentException("Unit name cannot be blank."))
+        }
+        val updated = unit.copy(
+            title = trimmed,
+            unitNumber = orderIndex ?: unit.unitNumber
+        )
+        _subjects.update { subjects ->
+            subjects.map { s ->
+                if (s.id != subject.id) s
+                else s.copy(units = s.units.map { if (it.id == unitId) updated else it }.sortedBy { it.unitNumber })
+            }
+        }
+        recalculateDerivedState()
+        return Result.success(updated)
+    }
+
+    override suspend fun deleteUnit(subjectId: String, unitId: String): Result<Unit> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        val unit = subject.units.find { it.id == unitId }
+            ?: return Result.failure(NoSuchElementException("Unit not found."))
+        val topicCount = unit.topics.size
+        val questionCount = mutableQuestions.count { it.unitId == unitId }
+        if (topicCount > 0 || questionCount > 0) {
+            val parts = buildList {
+                if (topicCount > 0) add("$topicCount topic(s)")
+                if (questionCount > 0) add("$questionCount question(s)")
+            }
+            return Result.failure(
+                IllegalStateException(
+                    "This unit still has ${parts.joinToString(" and ")}. " +
+                        "Reassign or delete them before deleting the unit."
+                )
+            )
+        }
+        _subjects.update { subjects ->
+            subjects.map { s ->
+                if (s.id != subject.id) s
+                else s.copy(
+                    units = s.units.filterNot { it.id == unitId },
+                    unitsCount = s.units.count { it.id != unitId }
+                )
+            }
+        }
+        recalculateDerivedState()
+        return Result.success(Unit)
     }
 
     private val _errorMessage = MutableStateFlow<String?>(null)

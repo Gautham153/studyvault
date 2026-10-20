@@ -31,6 +31,7 @@ import com.example.data.remote.UnitDto
 import com.example.util.StudyDateUtils
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.storage.storage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -91,6 +92,9 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
     private val _studyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
     override val studyRecommendations: StateFlow<List<StudyRecommendation>> = _studyRecommendations.asStateFlow()
 
+    private val _allStudyRecommendations = MutableStateFlow<List<StudyRecommendation>>(emptyList())
+    override val allStudyRecommendations: StateFlow<List<StudyRecommendation>> = _allStudyRecommendations.asStateFlow()
+
     private val _todayStudyPlan = MutableStateFlow<List<StudyRecommendation>>(emptyList())
     override val todayStudyPlan: StateFlow<List<StudyRecommendation>> = _todayStudyPlan.asStateFlow()
 
@@ -136,6 +140,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
         _recentRevisions.value = emptyList()
         _priorityStudyItems.value = emptyList()
         _studyRecommendations.value = emptyList()
+        _allStudyRecommendations.value = emptyList()
         _todayStudyPlan.value = emptyList()
         allUnits = emptyList()
         allTopics = emptyList()
@@ -884,8 +889,11 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             upcomingExams = _upcomingExams.value,
             todayIso = todayIso
         )
+        val allRecommendations = (recommendations + questionRecommendations)
+            .sortedWith(StudyPriorityEngine.recommendationOrder())
+        _allStudyRecommendations.value = allRecommendations
         _todayStudyPlan.value = StudyPriorityEngine.selectTodayPlan(
-            recommendations = recommendations + questionRecommendations,
+            recommendations = allRecommendations,
             config = TodayPlanConfig(dailyMinutesTarget = dailyMinutesTarget)
         )
     }
@@ -974,6 +982,373 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         }
     }
+
+    /**
+     * Rebuilds domain subjects from the cached raw DTOs after a mutation. The subject DTO list is
+     * reconstructed from the currently published subjects so name/code/icon edits are preserved.
+     */
+    private fun reassembleSubjectsFromCache(): List<Subject> {
+        val userId = getUserId() ?: return _subjects.value
+        val domainSubjects = assembleSubjects(
+            subjectDtos = _subjects.value.map { s ->
+                SubjectDto(
+                    id = s.id,
+                    userId = userId,
+                    name = s.name,
+                    description = s.code,
+                    semester = s.semesterNumber,
+                    iconKey = s.iconKey
+                )
+            },
+            unitDtos = allUnits,
+            topicDtos = allTopics,
+            questionDtos = allQuestions,
+            noteDtos = allNotes,
+            materialDtos = allMaterials,
+            revisionDtos = allRevisionHistory
+        )
+        _subjects.value = domainSubjects
+        recomputeRecommendations(domainSubjects)
+        return domainSubjects
+    }
+
+    override suspend fun updateSubject(
+        subjectId: String,
+        subjectName: String,
+        code: String,
+        iconKey: String
+    ): Result<Subject> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot update subject: User is not authenticated."))
+
+        val existing = _subjects.value.find { it.id == subjectId }
+            ?: return@withContext Result.failure(NoSuchElementException("Subject not found."))
+        val trimmedName = subjectName.trim()
+        if (trimmedName.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Subject name cannot be blank."))
+        }
+        val resolvedIcon = if (iconKey.isNotBlank()) iconKey else existing.iconKey
+        val resolvedCode = code.trim().ifBlank { existing.code }
+
+        try {
+            val nowStr = StudyDateUtils.nowIsoTimestamp()
+            client.from("subjects").update(
+                {
+                    set("name", trimmedName)
+                    set("description", resolvedCode)
+                    set("icon_key", resolvedIcon)
+                    set("updated_at", nowStr)
+                }
+            ) {
+                filter {
+                    eq("id", subjectId)
+                    eq("user_id", userId)
+                }
+            }
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Subject update discarded: session changed."))
+            }
+
+            val domainSubjects = reassembleSubjectsFromCache()
+            publishExams(assembleExamItems(allExams, domainSubjects))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully updated subject $subjectId")
+            domainSubjects.find { it.id == subjectId }?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("Subject was updated but could not be read back."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update subject $subjectId", e)
+            _errorMessage.value = "Failed to update subject: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun deleteSubject(subjectId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot delete subject: User is not authenticated."))
+
+        _subjects.value.find { it.id == subjectId }
+            ?: return@withContext Result.failure(NoSuchElementException("Subject not found."))
+
+        val unitIds = allUnits.filter { it.subjectId == subjectId }.mapNotNull { it.id }
+        val topicIds = allTopics.filter { it.unitId in unitIds }.mapNotNull { it.id }
+        val materialPaths = allMaterials
+            .filter { it.subjectId == subjectId }
+            .map { it.storagePath }
+            .filter { it.isNotBlank() }
+
+        try {
+            // Explicit ordered deletes scoped to this subject and user. Notes, questions, revision
+            // history, topics, units, exams, and materials are deleted here so the operation does
+            // not depend on unverified ON DELETE rules; the subject row goes last.
+            client.from("notes").delete {
+                filter {
+                    eq("user_id", userId)
+                    eq("subject_id", subjectId)
+                }
+            }
+            client.from("questions").delete {
+                filter {
+                    eq("user_id", userId)
+                    eq("subject_id", subjectId)
+                }
+            }
+            for (topicId in topicIds) {
+                client.from("revision_history").delete {
+                    filter {
+                        eq("user_id", userId)
+                        eq("topic_id", topicId)
+                    }
+                }
+            }
+            for (unitId in unitIds) {
+                client.from("topics").delete {
+                    filter {
+                        eq("user_id", userId)
+                        eq("unit_id", unitId)
+                    }
+                }
+            }
+            client.from("units").delete {
+                filter {
+                    eq("user_id", userId)
+                    eq("subject_id", subjectId)
+                }
+            }
+            client.from("exams").delete {
+                filter {
+                    eq("user_id", userId)
+                    eq("subject_id", subjectId)
+                }
+            }
+            client.from("study_materials").delete {
+                filter {
+                    eq("user_id", userId)
+                    eq("subject_id", subjectId)
+                }
+            }
+            client.from("subjects").delete {
+                filter {
+                    eq("id", subjectId)
+                    eq("user_id", userId)
+                }
+            }
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Subject deletion discarded: session changed."))
+            }
+
+            allUnits = allUnits.filter { it.subjectId != subjectId }
+            allTopics = allTopics.filterNot { it.unitId in unitIds }
+            allQuestions = allQuestions.filter { it.subjectId != subjectId }
+            allNotes = allNotes.filter { it.subjectId != subjectId }
+            allExams = allExams.filter { it.subjectId != subjectId }
+            allMaterials = allMaterials.filter { it.subjectId != subjectId }
+            allRevisionHistory = allRevisionHistory.filterNot { it.topicId in topicIds }
+
+            _subjects.value = _subjects.value.filterNot { it.id == subjectId }
+            publishExams(assembleExamItems(allExams, _subjects.value))
+            recalculateOverallProgress()
+            recomputeRecommendations()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully deleted subject $subjectId")
+
+            if (materialPaths.isNotEmpty()) {
+                try {
+                    client.storage.from(SupabaseStudyMaterialRepository.BUCKET_NAME).delete(materialPaths)
+                } catch (storageError: Exception) {
+                    Log.w(TAG, "Subject rows deleted, but some storage files could not be removed", storageError)
+                }
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete subject $subjectId", e)
+            _errorMessage.value = "Failed to delete subject: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun createUnit(subjectId: String, name: String, orderIndex: Int?): Result<UnitModel> =
+        withContext(Dispatchers.IO) {
+            val client = SupabaseClientProvider.client
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+                )
+            val userId = getUserId()
+                ?: return@withContext Result.failure(IllegalStateException("Cannot create unit: User is not authenticated."))
+
+            val subject = _subjects.value.find { it.id == subjectId }
+                ?: return@withContext Result.failure(NoSuchElementException("Subject not found."))
+            val trimmed = name.trim()
+            if (trimmed.isBlank()) {
+                return@withContext Result.failure(IllegalArgumentException("Unit name cannot be blank."))
+            }
+
+            try {
+                val newId = UUID.randomUUID().toString()
+                val nowStr = StudyDateUtils.nowIsoTimestamp()
+                val maxOrder = allUnits
+                    .filter { it.subjectId == subject.id }
+                    .map { it.orderIndex }
+                    .maxOrNull() ?: 0
+                val dto = UnitDto(
+                    id = newId,
+                    userId = userId,
+                    subjectId = subject.id,
+                    name = trimmed,
+                    orderIndex = orderIndex ?: (maxOrder + 1),
+                    createdAt = nowStr,
+                    updatedAt = nowStr
+                )
+                client.from("units").insert(dto)
+
+                if (getUserId() != userId) {
+                    return@withContext Result.failure(StaleRequestException("Unit creation discarded: session changed."))
+                }
+
+                allUnits = allUnits + dto
+                val domainSubjects = reassembleSubjectsFromCache()
+                publishExams(assembleExamItems(allExams, domainSubjects))
+                recalculateOverallProgress()
+                _errorMessage.value = null
+                Log.i(TAG, "Successfully created unit '$trimmed' ($newId) for subject ${subject.id}")
+                getUnitById(subject.id, newId)?.let { Result.success(it) }
+                    ?: Result.failure(IllegalStateException("Unit was saved but could not be read back."))
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create unit for subject $subjectId", e)
+                _errorMessage.value = "Failed to create unit: ${e.message}"
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun updateUnit(
+        subjectId: String,
+        unitId: String,
+        name: String,
+        orderIndex: Int?
+    ): Result<UnitModel> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot update unit: User is not authenticated."))
+
+        allUnits.find { it.id == unitId && it.subjectId == subjectId }
+            ?: return@withContext Result.failure(NoSuchElementException("Unit not found."))
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Unit name cannot be blank."))
+        }
+
+        try {
+            val nowStr = StudyDateUtils.nowIsoTimestamp()
+            client.from("units").update(
+                {
+                    set("name", trimmed)
+                    orderIndex?.let { set("order_index", it) }
+                    set("updated_at", nowStr)
+                }
+            ) {
+                filter {
+                    eq("id", unitId)
+                    eq("user_id", userId)
+                }
+            }
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Unit update discarded: session changed."))
+            }
+
+            allUnits = allUnits.map {
+                if (it.id == unitId) {
+                    it.copy(
+                        name = trimmed,
+                        orderIndex = orderIndex ?: it.orderIndex,
+                        updatedAt = nowStr
+                    )
+                } else it
+            }
+            val domainSubjects = reassembleSubjectsFromCache()
+            publishExams(assembleExamItems(allExams, domainSubjects))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully updated unit $unitId")
+            getUnitById(subjectId, unitId)?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("Unit was updated but could not be read back."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update unit $unitId", e)
+            _errorMessage.value = "Failed to update unit: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun deleteUnit(subjectId: String, unitId: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val client = SupabaseClientProvider.client
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+                )
+            val userId = getUserId()
+                ?: return@withContext Result.failure(IllegalStateException("Cannot delete unit: User is not authenticated."))
+
+            allUnits.find { it.id == unitId && it.subjectId == subjectId }
+                ?: return@withContext Result.failure(NoSuchElementException("Unit not found."))
+
+            val topicCount = allTopics.count { it.unitId == unitId }
+            val questionCount = allQuestions.count { it.unitId == unitId }
+            if (topicCount > 0 || questionCount > 0) {
+                val parts = buildList {
+                    if (topicCount > 0) add("$topicCount topic(s)")
+                    if (questionCount > 0) add("$questionCount question(s)")
+                }
+                return@withContext Result.failure(
+                    IllegalStateException(
+                        "This unit still has ${parts.joinToString(" and ")}. " +
+                            "Reassign or delete them before deleting the unit."
+                    )
+                )
+            }
+
+            try {
+                // study_materials.unit_id is set to NULL by the schema's ON DELETE SET NULL rule,
+                // so linked materials survive the unit deletion with a cleared unit link.
+                client.from("units").delete {
+                    filter {
+                        eq("id", unitId)
+                        eq("user_id", userId)
+                    }
+                }
+
+                if (getUserId() != userId) {
+                    return@withContext Result.failure(StaleRequestException("Unit deletion discarded: session changed."))
+                }
+
+                allUnits = allUnits.filterNot { it.id == unitId }
+                allMaterials = allMaterials.map {
+                    if (it.unitId == unitId) it.copy(unitId = null) else it
+                }
+                val domainSubjects = reassembleSubjectsFromCache()
+                publishExams(assembleExamItems(allExams, domainSubjects))
+                recalculateOverallProgress()
+                _errorMessage.value = null
+                Log.i(TAG, "Successfully deleted unit $unitId")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete unit $unitId", e)
+                _errorMessage.value = "Failed to delete unit: ${e.message}"
+                Result.failure(e)
+            }
+        }
 
     override fun getExamById(examId: String): ExamItem? =
         (_upcomingExams.value + _pastExams.value).find { it.id == examId }
