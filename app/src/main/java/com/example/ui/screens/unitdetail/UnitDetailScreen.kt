@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.HelpOutline
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -120,6 +120,7 @@ fun UnitDetailScreen(
     var questionsExpanded by remember { mutableStateOf(false) }
     var materialToDelete by remember { mutableStateOf<MaterialItem?>(null) }
     var showAddQuestionDialog by remember { mutableStateOf(false) }
+    var showAddTopicDialog by remember { mutableStateOf(false) }
     var questionToEdit by remember { mutableStateOf<QuestionItem?>(null) }
     var questionToDelete by remember { mutableStateOf<QuestionItem?>(null) }
 
@@ -284,12 +285,20 @@ fun UnitDetailScreen(
                             fontWeight = FontWeight.Bold
                         )
 
-                        Icon(
-                            imageVector = Icons.Default.Sort,
-                            contentDescription = "Sort",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Button(
+                            onClick = { showAddTopicDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("add_unit_topic_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Add Topic")
+                        }
                     }
                 }
 
@@ -866,6 +875,88 @@ fun UnitDetailScreen(
             containerColor = SurfaceDark
         )
     }
+
+    if (showAddTopicDialog) {
+        AddTopicDialog(
+            onDismiss = { showAddTopicDialog = false },
+            onSave = { title ->
+                viewModel.createTopic(title) { topicId ->
+                    onNavigateToTopicDetail(topicId)
+                }
+                showAddTopicDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddTopicDialog(
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var validationError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Add Topic",
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Create a new topic in this unit.",
+                    color = TextSecondary
+                )
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = {
+                        title = it
+                        validationError = null
+                    },
+                    label = { Text("Topic title") },
+                    singleLine = true,
+                    isError = validationError != null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("add_topic_title_field")
+                )
+                validationError?.let { message ->
+                    Text(
+                        text = message,
+                        color = StatusRed,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag("add_topic_error")
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (title.isBlank()) {
+                        validationError = "Topic title cannot be blank."
+                    } else {
+                        onSave(title)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                modifier = Modifier.testTag("add_topic_confirm_button")
+            ) {
+                Text("Add", color = Color.White)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        },
+        containerColor = SurfaceDark
+    )
 }
 
 @Composable

@@ -73,6 +73,11 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
+internal fun todayPlanItemKey(recommendation: StudyRecommendation): String =
+    "plan_${recommendation.recommendationKey}"
+
+internal fun revisionItemKey(item: StudyItem): String = "revision_${item.cardKey}"
+
 internal fun todayPlanEmptyText(isLoading: Boolean, hasSubjects: Boolean, hasError: Boolean): String = when {
     isLoading && !hasSubjects -> "Loading your plan..."
     hasError -> "Plan unavailable — see the notice above."
@@ -239,7 +244,7 @@ fun HomeScreen(
             }
         }
 
-        items(todayPlan, key = { it.recommendationKey }) { recommendation ->
+        items(todayPlan, key = { todayPlanItemKey(it) }) { recommendation ->
             TodayPlanItemCard(
                 recommendation = recommendation,
                 onOpenTopic = { onNavigateToTopicDetail(recommendation.topicId) },
@@ -293,7 +298,7 @@ fun HomeScreen(
             }
         }
 
-        items(revisionPriorities, key = { it.cardKey }) { studyItem ->
+        items(revisionPriorities, key = { revisionItemKey(it) }) { studyItem ->
             StudyTodayItemCard(
                 item = studyItem,
                 onClick = {

@@ -44,6 +44,9 @@ interface StudyVaultRepository {
     suspend fun updateUnit(subjectId: String, unitId: String, name: String, orderIndex: Int? = null): Result<UnitModel>
     suspend fun deleteUnit(subjectId: String, unitId: String): Result<Unit>
 
+    // Topic management
+    suspend fun createTopic(subjectId: String, unitId: String, title: String): Result<TopicModel>
+
     fun setAuthenticatedUser(email: String, displayName: String)
     fun clearData()
 

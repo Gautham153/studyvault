@@ -811,6 +811,39 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
         return Result.success(Unit)
     }
 
+    override suspend fun createTopic(subjectId: String, unitId: String, title: String): Result<TopicModel> {
+        val subject = getSubjectById(subjectId)
+            ?: return Result.failure(NoSuchElementException("Subject not found."))
+        subject.units.find { it.id == unitId }
+            ?: return Result.failure(NoSuchElementException("Unit not found."))
+        val trimmed = title.trim()
+        if (trimmed.isBlank()) {
+            return Result.failure(IllegalArgumentException("Topic title cannot be blank."))
+        }
+        val newTopic = TopicModel(
+            id = "t_${System.currentTimeMillis()}",
+            unitId = unitId,
+            subjectId = subjectId,
+            title = trimmed,
+            status = TopicStatus.NOT_STARTED,
+            materialsCount = 0,
+            questionsCount = 0,
+            notesCount = 0
+        )
+        _subjects.update { subjects ->
+            subjects.map { s ->
+                if (s.id != subjectId) s
+                else s.copy(
+                    units = s.units.map { u ->
+                        if (u.id != unitId) u else u.copy(topics = u.topics + newTopic)
+                    }
+                )
+            }
+        }
+        recalculateDerivedState()
+        return Result.success(newTopic)
+    }
+
     private val _errorMessage = MutableStateFlow<String?>(null)
     override val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 

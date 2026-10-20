@@ -1350,6 +1350,62 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
             }
         }
 
+    override suspend fun createTopic(
+        subjectId: String,
+        unitId: String,
+        title: String
+    ): Result<TopicModel> = withContext(Dispatchers.IO) {
+        val client = SupabaseClientProvider.client
+            ?: return@withContext Result.failure(
+                IllegalStateException("Supabase is unconfigured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY to enable cloud persistence.")
+            )
+        val userId = getUserId()
+            ?: return@withContext Result.failure(IllegalStateException("Cannot create topic: User is not authenticated."))
+
+        _subjects.value.find { it.id == subjectId }
+            ?: return@withContext Result.failure(NoSuchElementException("Subject not found."))
+        allUnits.find { it.id == unitId && it.subjectId == subjectId }
+            ?: return@withContext Result.failure(NoSuchElementException("Unit not found."))
+        val trimmed = title.trim()
+        if (trimmed.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Topic title cannot be blank."))
+        }
+
+        try {
+            val newId = UUID.randomUUID().toString()
+            val nowStr = StudyDateUtils.nowIsoTimestamp()
+            val dto = TopicDto(
+                id = newId,
+                userId = userId,
+                unitId = unitId,
+                name = trimmed,
+                status = TopicStatus.NOT_STARTED.name,
+                importance = "MEDIUM",
+                difficulty = "MEDIUM",
+                createdAt = nowStr,
+                updatedAt = nowStr
+            )
+            client.from("topics").insert(dto)
+
+            if (getUserId() != userId) {
+                return@withContext Result.failure(StaleRequestException("Topic creation discarded: session changed."))
+            }
+
+            allTopics = allTopics + dto
+            val domainSubjects = reassembleSubjectsFromCache()
+            publishExams(assembleExamItems(allExams, domainSubjects))
+            recalculateOverallProgress()
+            _errorMessage.value = null
+            Log.i(TAG, "Successfully created topic '$trimmed' ($newId) for unit $unitId")
+            getTopicById(newId)?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("Topic was saved but could not be read back."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create topic for unit $unitId", e)
+            _errorMessage.value = "Failed to create topic: ${e.message}"
+            Result.failure(e)
+        }
+    }
+
     override fun getExamById(examId: String): ExamItem? =
         (_upcomingExams.value + _pastExams.value).find { it.id == examId }
 

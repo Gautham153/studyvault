@@ -155,4 +155,25 @@ class UnitDetailViewModel(
         _errorMessage.value = null
         _statusMessage.value = null
     }
+
+    fun createTopic(title: String, onCreated: (String) -> Unit = {}) {
+        val sId = currentSubjectId ?: return
+        val uId = currentUnitId ?: return
+        viewModelScope.launch {
+            _errorMessage.value = null
+            _statusMessage.value = null
+            val result = repository.createTopic(subjectId = sId, unitId = uId, title = title)
+            result.fold(
+                onSuccess = { topic ->
+                    _statusMessage.value = "Added topic ${topic.title}"
+                    _subject.value = repository.getSubjectById(sId)
+                    _unit.value = repository.getUnitById(sId, uId)
+                    onCreated(topic.id)
+                },
+                onFailure = { error ->
+                    _errorMessage.value = error.message ?: "Failed to add topic."
+                }
+            )
+        }
+    }
 }
