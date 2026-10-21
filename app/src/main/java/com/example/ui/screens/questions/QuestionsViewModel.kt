@@ -234,12 +234,9 @@ class QuestionsViewModel(
                 onSuccess = { created ->
                     if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
                         _uiState.update { current ->
-                            // Idempotent: the repository's subject-flow refresh may have already
-                            // published this question before the success callback runs, so drop
-                            // any existing copy first to avoid showing it twice.
                             current.copy(
                                 isSaving = false,
-                                questions = current.questions.filterNot { it.id == created.id } + created,
+                                questions = current.questions + created,
                                 isEmpty = false,
                                 successMessage = "Question added successfully."
                             )
@@ -287,13 +284,10 @@ class QuestionsViewModel(
                 onSuccess = { updated ->
                     if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
                         _uiState.update { current ->
-                            // Replace in place, then collapse any duplicate ids that an earlier
-                            // refresh race may have introduced, preserving order.
-                            val replaced = current.questions.map { if (it.id == updated.id) updated else it }
-                            val deduped = replaced.distinctBy { it.id }
+                            val updatedList = current.questions.map { if (it.id == updated.id) updated else it }
                             current.copy(
                                 isSaving = false,
-                                questions = deduped,
+                                questions = updatedList,
                                 successMessage = "Question updated successfully."
                             )
                         }
