@@ -135,6 +135,15 @@ object StudyDateUtils {
         return (dayIndex(to) - dayIndex(from)).toInt()
     }
 
+    /** Shifts an ISO date (yyyy-MM-dd) by [days] calendar days and returns it as yyyy-MM-dd. */
+    fun isoPlusDays(iso: String, days: Int): String {
+        val base = parseIsoDate(iso) ?: return iso
+        val calendar = java.util.Calendar.getInstance()
+        calendar.time = base
+        calendar.add(java.util.Calendar.DAY_OF_YEAR, days)
+        return pattern(ISO_DATE_PATTERN).format(calendar.time)
+    }
+
     /** "Today", "Tomorrow", "in 5 days", "3 days ago", or "Date unavailable" when unknown. */
     fun describeDaysUntil(days: Int?): String {
         if (days == null) return "Date unavailable"

@@ -293,10 +293,13 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     private val _subjects = MutableStateFlow(defaultSubjects)
     override val subjects: StateFlow<List<Subject>> = _subjects.asStateFlow()
 
+    private fun seededExamDate(daysFromToday: Int): String =
+        StudyDateUtils.toDisplayDate(StudyDateUtils.isoPlusDays(StudyDateUtils.todayIso(), daysFromToday))
+
     private val mutableExams = mutableListOf(
-        ExamItem("e1", "s_java", "Java", "coffee", "Oct 20, 2026", 0, 0, "CS201", "Main Hall B, Seat 32", name = "Mid Term Exam"),
-        ExamItem("e2", "s_dbms", "DBMS", "database", "Oct 23, 2026", 0, 0, "CS202", "Engineering Block 2, Room 104", name = "Mid Term Exam"),
-        ExamItem("e3", "s_ai", "Artificial Intelligence", "ai", "Nov 5, 2026", 0, 0, "CS305", "Auditorium Annex", name = "Semester Final")
+        ExamItem("e1", "s_java", "Java", "coffee", seededExamDate(0), 0, 0, "CS201", "Main Hall B, Seat 32", name = "Mid Term Exam"),
+        ExamItem("e2", "s_dbms", "DBMS", "database", seededExamDate(3), 0, 0, "CS202", "Engineering Block 2, Room 104", name = "Mid Term Exam"),
+        ExamItem("e3", "s_ai", "Artificial Intelligence", "ai", seededExamDate(16), 0, 0, "CS305", "Auditorium Annex", name = "Semester Final")
     )
 
     private val mutableRevisionEvents = mutableListOf<RevisionEvent>()
