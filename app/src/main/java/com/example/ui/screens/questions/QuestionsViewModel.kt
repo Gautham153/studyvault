@@ -234,9 +234,18 @@ class QuestionsViewModel(
                 onSuccess = { created ->
                     if (isSameActiveResource(contextTopicId, contextSubjectId, contextToken)) {
                         _uiState.update { current ->
+                            // Idempotent by ID: the repository's subjects flow may have already
+                            // delivered this question via a refresh, so update in place
+                            // instead of appending it again (duplicate-question regression).
+                            val appended =
+                                if (current.questions.any { it.id == created.id }) {
+                                    current.questions.map { if (it.id == created.id) created else it }
+                                } else {
+                                    current.questions + created
+                                }
                             current.copy(
                                 isSaving = false,
-                                questions = current.questions + created,
+                                questions = appended,
                                 isEmpty = false,
                                 successMessage = "Question added successfully."
                             )

@@ -296,6 +296,13 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     private fun seededExamDate(daysFromToday: Int): String =
         StudyDateUtils.toDisplayDate(StudyDateUtils.isoPlusDays(StudyDateUtils.todayIso(), daysFromToday))
 
+    // Seeded revisions are relative to today's date, like seededExamDate: fixed calendar
+    // dates silently rotate across the revision-recency thresholds (10/21 idle days) and
+    // reshuffle the ranked plan. Offsets 14/16/19 mirror the fixture's working-day intent
+    // (idle >= 10 but < 21 for both revised topics).
+    private fun seededRevisionTs(daysBeforeToday: Int): String =
+        StudyDateUtils.isoPlusDays(StudyDateUtils.todayIso(), -daysBeforeToday) + "T09:00:00Z"
+
     private val mutableExams = mutableListOf(
         ExamItem("e1", "s_java", "Java", "coffee", seededExamDate(0), 0, 0, "CS201", "Main Hall B, Seat 32", name = "Mid Term Exam"),
         ExamItem("e2", "s_dbms", "DBMS", "database", seededExamDate(3), 0, 0, "CS202", "Engineering Block 2, Room 104", name = "Mid Term Exam"),
@@ -336,9 +343,9 @@ class MockStudyVaultRepository private constructor() : StudyVaultRepository {
     }
 
     private fun seedRevisionHistory() {
-        recordSeedRevision("t_java_u2_1", "2026-10-07T09:00:00Z")
-        recordSeedRevision("t_java_u2_2", "2026-10-05T09:00:00Z")
-        recordSeedRevision("t_java_u2_1", "2026-10-02T09:00:00Z")
+        recordSeedRevision("t_java_u2_1", seededRevisionTs(14))
+        recordSeedRevision("t_java_u2_2", seededRevisionTs(16))
+        recordSeedRevision("t_java_u2_1", seededRevisionTs(19))
     }
 
     private fun recordSeedRevision(topicId: String, revisedAt: String) {
