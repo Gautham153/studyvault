@@ -239,6 +239,51 @@ class StudyVaultRepairTest {
         )
     }
 
+    @Test
+    fun `adding question does not duplicate when repository subjects flow refreshes before onSuccess`() = runTest {
+        val repo = MockStudyVaultRepository.createIsolated()
+        val vm = QuestionsViewModel(repo)
+
+        vm.loadForTopic("t_java_u2_1")
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val initialCount = vm.uiState.value.questions.size
+
+        // In MockStudyVaultRepository, addQuestion updates subjects Flow, which triggers the
+        // ViewModel's subjects collector to refreshActiveResource() before/concurrently with onSuccess completing.
+        vm.addQuestion(
+            subjectId = "s_java",
+            unitId = "u_java_2",
+            topicId = "t_java_u2_1",
+            questionText = "Concurrency duplicate race test question",
+            marks = 5,
+            importance = Importance.MEDIUM,
+            status = "NOT_PREPARED"
+        )
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val state = vm.uiState.value
+        assertFalse("isSaving must be cleared", state.isSaving)
+        assertEquals("Success message must be set", "Question added successfully.", state.successMessage)
+        assertEquals(
+            "Topic questions count must increase by exactly 1 without duplicates",
+            initialCount + 1,
+            state.questions.size
+        )
+        val matchingQuestions = state.questions.filter { it.questionText == "Concurrency duplicate race test question" }
+        assertEquals(
+            "Exactly 1 instance of the new question must exist in uiState (no duplicate from refresh/add-success race)",
+            1,
+            matchingQuestions.size
+        )
+        val questionIds = state.questions.map { it.id }
+        assertEquals(
+            "All question IDs in uiState must be distinct",
+            questionIds.distinct().size,
+            questionIds.size
+        )
+    }
+
     // --- Resource switching while a mutation is in flight ---
 
     @Test

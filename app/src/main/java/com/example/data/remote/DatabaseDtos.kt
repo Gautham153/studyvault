@@ -130,12 +130,15 @@ data class ExamDto(
     @SerialName("updated_at") val updatedAt: String? = null
 )
 
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 @Serializable
 data class RevisionHistoryDto(
     @SerialName("id") val id: String? = null,
     @SerialName("user_id") val userId: String? = null,
     @SerialName("topic_id") val topicId: String,
     @SerialName("studied_at") val studiedAt: String? = null,
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.ALWAYS)
     @SerialName("revision_number") val revisionNumber: Int = 1,
     @SerialName("previous_status") val previousStatus: String? = null,
     @SerialName("new_status") val newStatus: String,

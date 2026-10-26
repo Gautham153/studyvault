@@ -725,7 +725,7 @@ class SupabaseStudyVaultRepository private constructor() : StudyVaultRepository 
                         }
                         .decodeList()
 
-                    val nextRevisionNumber = (historyList.maxOfOrNull { it.revisionNumber } ?: 0) + 1
+                    val nextRevisionNumber = maxOf(existing.revisionCount, historyList.maxOfOrNull { it.revisionNumber } ?: 0) + 1
 
                     val dto = RevisionHistoryDto(
                         id = UUID.randomUUID().toString(),

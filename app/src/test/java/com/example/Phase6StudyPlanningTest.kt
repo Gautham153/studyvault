@@ -291,6 +291,23 @@ class Phase6StudyPlanningTest {
         assertEquals(1, result.getOrThrow().size)
     }
 
+    @Test
+    fun `RevisionHistoryDto encodes revision_number even when revisionNumber is 1 and encodeDefaults is false`() {
+        val dto = RevisionHistoryDto(
+            id = "r1",
+            userId = "u1",
+            topicId = "t1",
+            revisionNumber = 1,
+            newStatus = "COMPLETED"
+        )
+        val json = kotlinx.serialization.json.Json { encodeDefaults = false }
+        val encoded = json.encodeToString(RevisionHistoryDto.serializer(), dto)
+        assertTrue(
+            "revision_number must be explicitly serialized so database not-null constraint is satisfied",
+            encoded.contains("\"revision_number\":1")
+        )
+    }
+
     // --- Test fixtures --------------------------------------------------------
 
     private fun topic(id: String, status: TopicStatus): TopicModel =
